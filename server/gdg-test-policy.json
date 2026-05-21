@@ -1,0 +1,21 @@
+{
+  "distribution": "all-except-private",
+  "serverOnlyMods": [
+    "PrismaCore",
+    "0_TFP_Harmony"
+  ],
+  "serverOnlyPrefixes": [
+    "GDG",
+    "TFP_"
+  ],
+  "extraClientPackages": [
+    {
+      "id": "gdgclient",
+      "name": "GDG Client",
+      "folderName": "GDGClient",
+      "githubRepo": "VeriduxInteractive/gdg-client-public",
+      "release": "latest",
+      "assetName": "GDGClient.zip"
+    }
+  ]
+}

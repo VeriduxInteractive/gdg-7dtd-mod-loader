@@ -1,0 +1,67 @@
+{
+  "name": "gdg-7dtd-mod-loader",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Golden Days Gaming desktop mod loader for syncing 7 Days to Die client mods with a server manifest.",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "build": "tsc --noEmit && vite build",
+    "package:win": "npm run build && electron-builder --win dir",
+    "package:win:portable": "npm run build && electron-builder --win portable",
+    "installer:win": "npm run build && electron-builder --win nsis",
+    "preview": "vite preview --host 127.0.0.1",
+    "start": "electron .",
+    "dev:fixture": "node scripts/create-dev-fixture.cjs",
+    "server:publish": "node server/gdg-sync-server.cjs publish",
+    "server:serve": "node server/gdg-sync-server.cjs serve",
+    "server:dev": "node server/gdg-sync-server.cjs publish-and-serve"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "electron": "^42.0.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.goldendaysgaming.modloader",
+    "productName": "GDG Mod Loader",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "server-directory/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "dir"
+      ]
+    },
+    "portable": {
+      "artifactName": "GDG-Mod-Loader-${version}-portable.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "GDG-Mod-Loader-${version}-setup.exe"
+    }
+  }
+}

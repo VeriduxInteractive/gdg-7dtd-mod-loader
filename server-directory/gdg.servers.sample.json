@@ -1,0 +1,15 @@
+{
+  "directoryVersion": 1,
+  "brand": "Golden Days Gaming",
+  "servers": [
+    {
+      "id": "gdg-test",
+      "name": "GDG Test Server",
+      "description": "OVH Pterodactyl test server",
+      "host": "40.160.20.5",
+      "gamePort": 26900,
+      "queryPort": 26901,
+      "syncUrl": "http://40.160.20.5:8787/gdg-sync/manifest.json"
+    }
+  ]
+}

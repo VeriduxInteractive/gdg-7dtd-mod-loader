@@ -1,0 +1,32 @@
+{
+  "distribution": "allowlist",
+  "clientMods": [
+    "GDG-UI",
+    "GDG-Icons",
+    "GDG-Asset-Pack"
+  ],
+  "serverOnlyMods": [
+    "GDG-Core",
+    "GDG-Economy",
+    "GDG-Progression",
+    "PrismaCore",
+    "0_TFP_Harmony"
+  ],
+  "serverOnlyPrefixes": [
+    "GDG",
+    "TFP_"
+  ],
+  "extraClientMods": [
+    "/home/suaves/gdg-sync/client-mods/GDGClient"
+  ],
+  "extraClientPackages": [
+    {
+      "id": "gdgclient",
+      "name": "GDG Client",
+      "folderName": "GDGClient",
+      "githubRepo": "VeriduxInteractive/gdg-client-public",
+      "release": "latest",
+      "assetName": "GDGClient.zip"
+    }
+  ]
+}

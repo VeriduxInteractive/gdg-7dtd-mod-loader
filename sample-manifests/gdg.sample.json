@@ -1,0 +1,38 @@
+{
+  "manifestVersion": 1,
+  "game": "7dtd",
+  "server": {
+    "id": "golden-days-gaming",
+    "name": "Golden Days Gaming",
+    "host": "play.goldendaysgaming.example",
+    "port": 26900
+  },
+  "mods": [
+    {
+      "id": "gdg-core",
+      "name": "GDG Core",
+      "version": "0.1.0",
+      "required": true,
+      "folderName": "GDG-Core",
+      "folderSizeBytes": 0,
+      "source": {
+        "type": "zip",
+        "url": "D:\\Veridux Interactive\\GoldenDaysGaming\\GitHub\\gdg-7dtd-mods\\dist\\GDG-Core.zip",
+        "archiveSizeBytes": 0
+      }
+    },
+    {
+      "id": "gdg-ui",
+      "name": "GDG UI",
+      "version": "0.1.0",
+      "required": true,
+      "folderName": "GDG-UI",
+      "folderSizeBytes": 0,
+      "source": {
+        "type": "zip",
+        "url": "D:\\Veridux Interactive\\GoldenDaysGaming\\GitHub\\gdg-7dtd-mods\\dist\\GDG-UI.zip",
+        "archiveSizeBytes": 0
+      }
+    }
+  ]
+}

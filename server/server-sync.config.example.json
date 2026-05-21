@@ -1,0 +1,28 @@
+{
+  "gameRoot": "D:\\7dtd-server",
+  "modsPath": "D:\\7dtd-server\\Mods",
+  "out": "server-publish",
+  "baseUrl": "https://mods.goldendaysgaming.com",
+  "serverId": "golden-days-gaming-main",
+  "serverName": "Golden Days Gaming",
+  "publicHost": "play.goldendaysgaming.com",
+  "gamePort": 26900,
+  "port": 8787,
+  "host": "0.0.0.0",
+  "exclude": "GDGSyncClient,GDGSyncServer",
+  "distribution": "allowlist",
+  "clientMods": ["GDG-UI", "GDG-Icons", "GDG-Asset-Pack"],
+  "serverOnlyMods": ["GDG-Core", "GDG-Economy", "GDG-Progression", "PrismaCore", "0_TFP_Harmony"],
+  "serverOnlyPrefixes": ["GDG", "TFP_"],
+  "extraClientMods": ["/home/suaves/gdg-sync/client-mods/GDGClient"],
+  "extraClientPackages": [
+    {
+      "id": "gdgclient",
+      "name": "GDG Client",
+      "folderName": "GDGClient",
+      "githubRepo": "VeriduxInteractive/gdg-client-public",
+      "release": "latest",
+      "assetName": "GDGClient.zip"
+    }
+  ]
+}
