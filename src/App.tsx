@@ -418,6 +418,9 @@ function App() {
       setPreview(result.preview);
       setScan(result.preview.local);
       setActiveTab("sync");
+      if (!result.ok) {
+        setError(`${result.failedCount || 1} mod install${result.failedCount === 1 ? "" : "s"} failed. Check the sync log below.`);
+      }
     });
   }
 
@@ -1061,6 +1064,10 @@ function getProgressTitle(progress: SyncProgress) {
 
   if (progress.phase === "complete") {
     return "Finished syncing";
+  }
+
+  if (progress.phase === "failed") {
+    return "Sync needs attention";
   }
 
   return "Installing server mods";

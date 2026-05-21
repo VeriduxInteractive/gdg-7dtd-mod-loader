@@ -90,6 +90,8 @@ export type SyncPreview = {
 
 export type ApplyResult = {
   ok: boolean;
+  failedCount?: number;
+  failures?: Array<{ modName: string; error: string }>;
   backupRoot: string;
   log: string[];
   preview: SyncPreview;

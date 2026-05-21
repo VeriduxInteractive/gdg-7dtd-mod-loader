@@ -6,7 +6,8 @@ const crypto = require("node:crypto");
 const os = require("node:os");
 const { spawn } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
-const AdmZip = require("adm-zip");
+const { once } = require("node:events");
+const yauzl = require("yauzl");
 
 const GAME_ID = "7dtd";
 const GAME_NAME = "7 Days to Die";
@@ -931,6 +932,7 @@ async function applySync(payload, onProgress = () => {}) {
   const backupRoot = path.join(app.getPath("userData"), "backups", timestamp);
   const stagingRoot = path.join(app.getPath("temp"), "gdg-mod-loader", timestamp);
   const log = [];
+  const failures = [];
 
   await fsp.mkdir(modsPath, { recursive: true });
   await fsp.mkdir(stagingRoot, { recursive: true });
@@ -1012,6 +1014,7 @@ async function applySync(payload, onProgress = () => {}) {
         total
       });
       log.push(`Failed ${modName}: ${error.message}`);
+      failures.push({ modName, error: error.message });
     }
   }
 
@@ -1022,15 +1025,26 @@ async function applySync(payload, onProgress = () => {}) {
     total
   });
   const nextPreview = await previewSync(payload);
-  reportSyncProgress(onProgress, {
-    phase: "complete",
-    message: "Sync complete.",
-    current: total,
-    total
-  });
+  if (failures.length > 0) {
+    reportSyncProgress(onProgress, {
+      phase: "failed",
+      message: `Sync finished with ${failures.length} failed install${failures.length === 1 ? "" : "s"}.`,
+      current: total - failures.length,
+      total
+    });
+  } else {
+    reportSyncProgress(onProgress, {
+      phase: "complete",
+      message: "Sync complete.",
+      current: total,
+      total
+    });
+  }
 
   return {
-    ok: true,
+    ok: failures.length === 0,
+    failedCount: failures.length,
+    failures,
     backupRoot: (await exists(backupRoot)) ? backupRoot : "",
     log,
     preview: nextPreview
@@ -1385,21 +1399,31 @@ async function downloadModArchive(mod, stagingRoot, onDownload = () => {}) {
     const totalBytes = Number(response.headers.get("content-length") || source.archiveSizeBytes || source.sizeBytes || 0);
     if (response.body && typeof response.body.getReader === "function") {
       const reader = response.body.getReader();
-      const chunks = [];
+      const writeStream = fs.createWriteStream(archivePath);
       let receivedBytes = 0;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          const chunk = Buffer.from(value);
+          receivedBytes += chunk.length;
+          if (!writeStream.write(chunk)) {
+            await once(writeStream, "drain");
+          }
+          onDownload({ bytesReceived: receivedBytes, bytesTotal: totalBytes });
         }
-        const chunk = Buffer.from(value);
-        receivedBytes += chunk.length;
-        chunks.push(chunk);
-        onDownload({ bytesReceived: receivedBytes, bytesTotal: totalBytes });
+      } catch (error) {
+        writeStream.destroy();
+        throw error;
       }
 
-      await fsp.writeFile(archivePath, Buffer.concat(chunks));
+      await new Promise((resolve, reject) => {
+        writeStream.end(resolve);
+        writeStream.once("error", reject);
+      });
     } else {
       const buffer = Buffer.from(await response.arrayBuffer());
       onDownload({ bytesReceived: buffer.length, bytesTotal: totalBytes || buffer.length });
@@ -1426,9 +1450,7 @@ async function extractModArchive(archivePath, stagingRoot, mod) {
   await fsp.rm(extractRoot, { recursive: true, force: true });
   await fsp.mkdir(extractRoot, { recursive: true });
 
-  const zip = new AdmZip(archivePath);
-  assertSafeZipEntries(zip, extractRoot);
-  zip.extractAllTo(extractRoot, true);
+  await extractZipToDirectory(archivePath, extractRoot);
 
   const candidate = await findFolderWithModInfo(extractRoot);
   if (!candidate) {
@@ -1438,16 +1460,73 @@ async function extractModArchive(archivePath, stagingRoot, mod) {
   return candidate;
 }
 
-function assertSafeZipEntries(zip, extractRoot) {
+async function extractZipToDirectory(archivePath, extractRoot) {
+  const zipFile = await openZipFile(archivePath);
+  try {
+    await new Promise((resolve, reject) => {
+      zipFile.on("entry", (entry) => {
+        void (async () => {
+          try {
+            const destination = getSafeZipDestination(extractRoot, entry.fileName);
+            if (/\/$/.test(entry.fileName)) {
+              await fsp.mkdir(destination, { recursive: true });
+              zipFile.readEntry();
+              return;
+            }
+
+            await fsp.mkdir(path.dirname(destination), { recursive: true });
+            const readStream = await openZipReadStream(zipFile, entry);
+            await pipeline(readStream, fs.createWriteStream(destination, { flags: "w" }));
+            zipFile.readEntry();
+          } catch (error) {
+            reject(error);
+          }
+        })();
+      });
+
+      zipFile.once("end", resolve);
+      zipFile.once("error", reject);
+      zipFile.readEntry();
+    });
+  } finally {
+    zipFile.close();
+  }
+}
+
+function openZipFile(archivePath) {
+  return new Promise((resolve, reject) => {
+    yauzl.open(archivePath, { lazyEntries: true }, (error, zipFile) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve(zipFile);
+      }
+    });
+  });
+}
+
+function openZipReadStream(zipFile, entry) {
+  return new Promise((resolve, reject) => {
+    zipFile.openReadStream(entry, (error, readStream) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve(readStream);
+      }
+    });
+  });
+}
+
+function getSafeZipDestination(extractRoot, entryName) {
   const safeRoot = path.resolve(extractRoot);
   const safePrefix = `${safeRoot}${path.sep}`;
+  const destination = path.resolve(extractRoot, entryName);
 
-  for (const entry of zip.getEntries()) {
-    const destination = path.resolve(extractRoot, entry.entryName);
-    if (destination !== safeRoot && !destination.startsWith(safePrefix)) {
-      throw new Error("Archive contains an unsafe file path.");
-    }
+  if (destination !== safeRoot && !destination.startsWith(safePrefix)) {
+    throw new Error("Archive contains an unsafe file path.");
   }
+
+  return destination;
 }
 
 async function findFolderWithModInfo(root) {
