@@ -1,18 +1,30 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const crypto = require("node:crypto");
 const os = require("node:os");
 const { spawn } = require("node:child_process");
+const { pipeline } = require("node:stream/promises");
 const AdmZip = require("adm-zip");
 
 const GAME_ID = "7dtd";
 const GAME_NAME = "7 Days to Die";
 const CONFIG_VERSION = 1;
 const DEFAULT_SERVER_DIRECTORY = path.join(__dirname, "..", "server-directory", "gdg.servers.sample.json");
+const LOADER_RELEASE_API_URL = "https://api.github.com/repos/VeriduxInteractive/gdg-7dtd-mod-loader/releases/latest";
+const LOADER_RELEASES_URL = "https://github.com/VeriduxInteractive/gdg-7dtd-mod-loader/releases";
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 let mainWindow;
+let updateState = {
+  status: "idle",
+  currentVersion: "",
+  latestVersion: "",
+  updateAvailable: false,
+  releaseUrl: LOADER_RELEASES_URL,
+  error: ""
+};
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -38,7 +50,15 @@ function createWindow() {
 
 app.whenReady().then(() => {
   registerIpc();
+  updateState.currentVersion = app.getVersion();
+  updateApplicationMenu();
   createWindow();
+  setTimeout(() => {
+    void checkForLoaderUpdate({ silent: true });
+  }, 1500);
+  setInterval(() => {
+    void checkForLoaderUpdate({ silent: true });
+  }, UPDATE_CHECK_INTERVAL_MS);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -112,8 +132,10 @@ function registerIpc() {
     return getDiskSpace(payload.gamePath);
   });
 
-  ipcMain.handle("gdg:clone-game-install", async (_event, payload) => {
-    return cloneGameInstall(payload);
+  ipcMain.handle("gdg:clone-game-install", async (event, payload) => {
+    return cloneGameInstall(payload, (progress) => {
+      event.sender.send("gdg:clone-progress", progress);
+    });
   });
 
   ipcMain.handle("gdg:scan-mods", async (_event, payload) => {
@@ -124,8 +146,10 @@ function registerIpc() {
     return previewSync(payload);
   });
 
-  ipcMain.handle("gdg:apply-sync", async (_event, payload) => {
-    return applySync(payload);
+  ipcMain.handle("gdg:apply-sync", async (event, payload) => {
+    return applySync(payload, (progress) => {
+      event.sender.send("gdg:sync-progress", progress);
+    });
   });
 
   ipcMain.handle("gdg:launch-game", async (_event, payload) => {
@@ -140,6 +164,206 @@ function registerIpc() {
     const result = await shell.openPath(payload.filePath);
     return result ? { ok: false, error: result } : { ok: true };
   });
+}
+
+function updateApplicationMenu() {
+  const updateLabel = updateState.updateAvailable ? "Update Available" : "Update";
+  const updateStatusLabel = getUpdateStatusLabel();
+  const template = [
+    {
+      label: "File",
+      submenu: [
+        { role: "quit" }
+      ]
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" }
+      ]
+    },
+    {
+      label: "View",
+      submenu: [
+        { role: "reload" },
+        { role: "forceReload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" }
+      ]
+    },
+    {
+      label: updateLabel,
+      submenu: [
+        {
+          label: updateStatusLabel,
+          enabled: false
+        },
+        { type: "separator" },
+        {
+          label: updateState.updateAvailable ? `Download v${updateState.latestVersion}` : "Open Releases",
+          click: () => {
+            void shell.openExternal(updateState.releaseUrl || LOADER_RELEASES_URL);
+          }
+        },
+        {
+          label: "Check for Updates",
+          click: () => {
+            void checkForLoaderUpdate({ silent: false });
+          }
+        }
+      ]
+    },
+    {
+      label: "Window",
+      submenu: [
+        { role: "minimize" },
+        { role: "close" }
+      ]
+    }
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+function getUpdateStatusLabel() {
+  if (updateState.status === "checking") {
+    return "Checking for updates...";
+  }
+
+  if (updateState.updateAvailable) {
+    return `Version ${updateState.latestVersion} is available`;
+  }
+
+  if (updateState.status === "error") {
+    return `Update check failed: ${updateState.error}`;
+  }
+
+  if (updateState.latestVersion) {
+    return `Up to date: v${updateState.currentVersion}`;
+  }
+
+  return `Current version: v${updateState.currentVersion || app.getVersion()}`;
+}
+
+async function checkForLoaderUpdate(options = {}) {
+  updateState = {
+    ...updateState,
+    status: "checking",
+    currentVersion: app.getVersion(),
+    error: ""
+  };
+  updateApplicationMenu();
+
+  try {
+    const response = await fetch(LOADER_RELEASE_API_URL, {
+      headers: {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "GDG-Mod-Loader"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`GitHub returned ${response.status}`);
+    }
+
+    const release = await response.json();
+    const latestVersion = normalizeVersion(release.tag_name || release.name || "");
+    const currentVersion = normalizeVersion(app.getVersion());
+    const updateAvailable = compareVersions(latestVersion, currentVersion) > 0;
+
+    updateState = {
+      status: "ready",
+      currentVersion,
+      latestVersion,
+      updateAvailable,
+      releaseUrl: release.html_url || LOADER_RELEASES_URL,
+      error: ""
+    };
+    updateApplicationMenu();
+
+    if (!options.silent && mainWindow) {
+      if (updateAvailable) {
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: "info",
+          buttons: ["Download", "Later"],
+          defaultId: 0,
+          cancelId: 1,
+          title: "GDG Mod Loader Update",
+          message: `GDG Mod Loader v${latestVersion} is available.`,
+          detail: `You are currently running v${currentVersion}. Download the newest release from GitHub.`
+        });
+
+        if (result.response === 0) {
+          await shell.openExternal(updateState.releaseUrl);
+        }
+      } else {
+        await dialog.showMessageBox(mainWindow, {
+          type: "info",
+          buttons: ["OK"],
+          title: "GDG Mod Loader Update",
+          message: "GDG Mod Loader is up to date.",
+          detail: `You are running v${currentVersion}.`
+        });
+      }
+    }
+
+    return updateState;
+  } catch (error) {
+    updateState = {
+      ...updateState,
+      status: "error",
+      updateAvailable: false,
+      error: error.message
+    };
+    updateApplicationMenu();
+
+    if (!options.silent && mainWindow) {
+      await dialog.showMessageBox(mainWindow, {
+        type: "warning",
+        buttons: ["OK"],
+        title: "GDG Mod Loader Update",
+        message: "Could not check for updates.",
+        detail: error.message
+      });
+    }
+
+    return updateState;
+  }
+}
+
+function normalizeVersion(version) {
+  const match = String(version || "").trim().match(/\d+(?:\.\d+)*/);
+  return match ? match[0] : "0.0.0";
+}
+
+function compareVersions(left, right) {
+  const leftParts = normalizeVersion(left).split(".").map((part) => Number(part || 0));
+  const rightParts = normalizeVersion(right).split(".").map((part) => Number(part || 0));
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const leftValue = leftParts[index] || 0;
+    const rightValue = rightParts[index] || 0;
+    if (leftValue > rightValue) {
+      return 1;
+    }
+    if (leftValue < rightValue) {
+      return -1;
+    }
+  }
+
+  return 0;
 }
 
 async function loadConfig() {
@@ -310,7 +534,15 @@ async function isSevenDaysGameRoot(candidatePath) {
   return false;
 }
 
-async function cloneGameInstall(payload = {}) {
+async function cloneGameInstall(payload = {}, onProgress = () => {}) {
+  reportCloneProgress(onProgress, {
+    phase: "preparing",
+    message: "Preparing GDG copy.",
+    current: 0,
+    total: 0,
+    percent: 0
+  });
+
   if (!payload.sourcePath) {
     throw new Error("A detected 7 Days to Die folder is required before creating a GDG copy.");
   }
@@ -332,12 +564,15 @@ async function cloneGameInstall(payload = {}) {
     if (!(await isSevenDaysGameRoot(targetPath))) {
       throw new Error(`The target folder already exists and is not a 7 Days to Die install: ${targetPath}`);
     }
-  } else {
-    await fsp.cp(sourcePath, targetPath, {
-      recursive: true,
-      errorOnExist: true,
-      force: false
+    reportCloneProgress(onProgress, {
+      phase: "complete",
+      message: "Existing GDG copy is ready.",
+      current: 1,
+      total: 1,
+      percent: 100
     });
+  } else {
+    await copyDirectoryWithProgress(sourcePath, targetPath, onProgress);
     created = true;
   }
 
@@ -347,11 +582,26 @@ async function cloneGameInstall(payload = {}) {
   let shortcutError = "";
   if (payload.createShortcut) {
     try {
+      reportCloneProgress(onProgress, {
+        phase: "shortcut",
+        message: "Creating desktop shortcut.",
+        current: 1,
+        total: 1,
+        percent: 99
+      });
       shortcutPath = await createGameShortcut(targetPath, folderName);
     } catch (error) {
       shortcutError = error.message;
     }
   }
+
+  reportCloneProgress(onProgress, {
+    phase: "complete",
+    message: created ? "GDG copy created." : "GDG copy selected.",
+    current: 1,
+    total: 1,
+    percent: 100
+  });
 
   return {
     ok: true,
@@ -361,6 +611,100 @@ async function cloneGameInstall(payload = {}) {
     shortcutPath,
     ...(shortcutError ? { shortcutError } : {})
   };
+}
+
+async function copyDirectoryWithProgress(sourceRoot, targetRoot, onProgress) {
+  reportCloneProgress(onProgress, {
+    phase: "scanning",
+    message: "Scanning game files.",
+    current: 0,
+    total: 0,
+    percent: 1
+  });
+
+  const plan = await buildCopyPlan(sourceRoot, targetRoot);
+  let copiedFiles = 0;
+  let copiedBytes = 0;
+
+  await fsp.mkdir(targetRoot, { recursive: true });
+
+  if (plan.files.length === 0) {
+    reportCloneProgress(onProgress, {
+      phase: "copying",
+      message: "No files needed copying.",
+      current: 0,
+      total: 0,
+      percent: 100,
+      bytesReceived: 0,
+      bytesTotal: 0
+    });
+    return;
+  }
+
+  for (const directory of plan.directories) {
+    await fsp.mkdir(directory, { recursive: true });
+  }
+
+  for (const file of plan.files) {
+    await fsp.mkdir(path.dirname(file.to), { recursive: true });
+    await copyFileWithProgress(file.from, file.to, (chunkBytes) => {
+      copiedBytes += chunkBytes;
+      reportCloneProgress(onProgress, {
+        phase: "copying",
+        message: `Copying ${path.basename(file.from)}.`,
+        current: Math.min(copiedFiles + 1, plan.files.length),
+        total: plan.files.length,
+        bytesReceived: copiedBytes,
+        bytesTotal: plan.totalBytes
+      });
+    });
+    copiedFiles += 1;
+    reportCloneProgress(onProgress, {
+      phase: "copying",
+      message: `Copied ${path.basename(file.from)}.`,
+      current: copiedFiles,
+      total: plan.files.length,
+      bytesReceived: copiedBytes,
+      bytesTotal: plan.totalBytes
+    });
+  }
+}
+
+async function buildCopyPlan(sourceRoot, targetRoot) {
+  const directories = [];
+  const files = [];
+  let totalBytes = 0;
+
+  async function visit(currentSource) {
+    const entries = await fsp.readdir(currentSource, { withFileTypes: true });
+    for (const entry of entries) {
+      const sourcePath = path.join(currentSource, entry.name);
+      const relativePath = path.relative(sourceRoot, sourcePath);
+      const targetPath = path.join(targetRoot, relativePath);
+
+      if (entry.isDirectory()) {
+        directories.push(targetPath);
+        await visit(sourcePath);
+      } else if (entry.isFile()) {
+        const stats = await fsp.stat(sourcePath);
+        files.push({
+          from: sourcePath,
+          to: targetPath,
+          size: stats.size
+        });
+        totalBytes += stats.size;
+      }
+    }
+  }
+
+  await visit(sourceRoot);
+  return { directories, files, totalBytes };
+}
+
+async function copyFileWithProgress(sourcePath, targetPath, onChunk) {
+  const readStream = fs.createReadStream(sourcePath);
+  readStream.on("data", (chunk) => onChunk(chunk.length));
+  await pipeline(readStream, fs.createWriteStream(targetPath, { flags: "wx" }));
 }
 
 async function createGameShortcut(gamePath, shortcutName) {
@@ -580,7 +924,7 @@ async function previewSync(payload) {
   };
 }
 
-async function applySync(payload) {
+async function applySync(payload, onProgress = () => {}) {
   const preview = await previewSync(payload);
   const modsPath = path.join(payload.gamePath, "Mods");
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -592,16 +936,57 @@ async function applySync(payload) {
   await fsp.mkdir(stagingRoot, { recursive: true });
 
   const actionable = preview.plan.filter((item) => item.action === "install" || item.action === "update");
+  const total = actionable.length;
 
-  for (const item of actionable) {
+  reportSyncProgress(onProgress, {
+    phase: total > 0 ? "preparing" : "complete",
+    message: total > 0 ? `Preparing ${total} mod${total === 1 ? "" : "s"}.` : "Everything is already in sync.",
+    current: 0,
+    total
+  });
+
+  for (const [index, item] of actionable.entries()) {
+    const current = index + 1;
+    const modName = item.mod.name || item.mod.id;
     try {
-      log.push(`Preparing ${item.mod.name || item.mod.id}.`);
-      const archivePath = await downloadModArchive(item.mod, stagingRoot);
+      log.push(`Preparing ${modName}.`);
+      reportSyncProgress(onProgress, {
+        phase: "downloading",
+        message: `Downloading ${modName}.`,
+        modName,
+        current,
+        total
+      });
+      const archivePath = await downloadModArchive(item.mod, stagingRoot, (download) => {
+        reportSyncProgress(onProgress, {
+          phase: "downloading",
+          message: `Downloading ${modName}.`,
+          modName,
+          current,
+          total,
+          bytesReceived: download.bytesReceived,
+          bytesTotal: download.bytesTotal
+        });
+      });
+      reportSyncProgress(onProgress, {
+        phase: "extracting",
+        message: `Unpacking ${modName}.`,
+        modName,
+        current,
+        total
+      });
       const sourceFolder = await extractModArchive(archivePath, stagingRoot, item.mod);
       const folderName = sanitizeFolderName(item.mod.folderName || path.basename(sourceFolder));
       const targetFolder = path.join(modsPath, folderName);
 
       if (await exists(targetFolder)) {
+        reportSyncProgress(onProgress, {
+          phase: "backing-up",
+          message: `Backing up ${folderName}.`,
+          modName,
+          current,
+          total
+        });
         await fsp.mkdir(backupRoot, { recursive: true });
         const backupTarget = path.join(backupRoot, folderName);
         await fsp.cp(targetFolder, backupTarget, { recursive: true });
@@ -609,14 +994,40 @@ async function applySync(payload) {
         log.push(`Backed up ${folderName}.`);
       }
 
+      reportSyncProgress(onProgress, {
+        phase: "installing",
+        message: `Installing ${folderName}.`,
+        modName,
+        current,
+        total
+      });
       await fsp.cp(sourceFolder, targetFolder, { recursive: true });
       log.push(`${item.action === "install" ? "Installed" : "Updated"} ${folderName}.`);
     } catch (error) {
-      log.push(`Failed ${item.mod.name || item.mod.id}: ${error.message}`);
+      reportSyncProgress(onProgress, {
+        phase: "failed",
+        message: `Failed ${modName}: ${error.message}`,
+        modName,
+        current,
+        total
+      });
+      log.push(`Failed ${modName}: ${error.message}`);
     }
   }
 
+  reportSyncProgress(onProgress, {
+    phase: "verifying",
+    message: "Checking installed mods.",
+    current: total,
+    total
+  });
   const nextPreview = await previewSync(payload);
+  reportSyncProgress(onProgress, {
+    phase: "complete",
+    message: "Sync complete.",
+    current: total,
+    total
+  });
 
   return {
     ok: true,
@@ -897,7 +1308,64 @@ function summarizePlan(plan) {
   );
 }
 
-async function downloadModArchive(mod, stagingRoot) {
+function reportSyncProgress(onProgress, progress) {
+  const total = Math.max(Number(progress.total || 0), 0);
+  const current = Math.min(Math.max(Number(progress.current || 0), 0), total || 0);
+  let percent = total > 0 ? Math.round((current / total) * 100) : 100;
+
+  if (progress.phase === "downloading" && progress.bytesTotal > 0) {
+    const stepStart = Math.max(current - 1, 0) / total;
+    const stepSize = 1 / total;
+    const byteProgress = Math.min(Math.max(progress.bytesReceived / progress.bytesTotal, 0), 1);
+    percent = Math.round((stepStart + stepSize * byteProgress * 0.7) * 100);
+  } else if (progress.phase === "downloading" && total > 0) {
+    percent = Math.round((Math.max(current - 1, 0) / total) * 100);
+  } else if (progress.phase === "extracting" && total > 0) {
+    percent = Math.round(((Math.max(current - 1, 0) + 0.74) / total) * 100);
+  } else if (progress.phase === "backing-up" && total > 0) {
+    percent = Math.round(((Math.max(current - 1, 0) + 0.84) / total) * 100);
+  } else if (progress.phase === "installing" && total > 0) {
+    percent = Math.round(((Math.max(current - 1, 0) + 0.94) / total) * 100);
+  } else if (progress.phase === "failed" && total > 0) {
+    percent = Math.round((Math.max(current - 1, 0) / total) * 100);
+  }
+
+  onProgress({
+    phase: progress.phase,
+    message: progress.message,
+    modName: progress.modName || "",
+    current,
+    total,
+    percent: Math.min(Math.max(percent, 0), 100),
+    ...(progress.bytesReceived !== undefined ? { bytesReceived: progress.bytesReceived } : {}),
+    ...(progress.bytesTotal !== undefined ? { bytesTotal: progress.bytesTotal } : {})
+  });
+}
+
+function reportCloneProgress(onProgress, progress) {
+  const total = Math.max(Number(progress.total || 0), 0);
+  const current = Math.min(Math.max(Number(progress.current || 0), 0), total || 0);
+  let percent = Number(progress.percent || 0);
+
+  if (progress.phase === "copying" && progress.bytesTotal > 0) {
+    percent = Math.round((progress.bytesReceived / progress.bytesTotal) * 98);
+  } else if (total > 0 && !progress.percent) {
+    percent = Math.round((current / total) * 100);
+  }
+
+  onProgress({
+    phase: progress.phase,
+    message: progress.message,
+    modName: progress.modName || "",
+    current,
+    total,
+    percent: Math.min(Math.max(percent, 0), 100),
+    ...(progress.bytesReceived !== undefined ? { bytesReceived: progress.bytesReceived } : {}),
+    ...(progress.bytesTotal !== undefined ? { bytesTotal: progress.bytesTotal } : {})
+  });
+}
+
+async function downloadModArchive(mod, stagingRoot, onDownload = () => {}) {
   const source = mod.source || {};
   const url = source.url;
 
@@ -914,10 +1382,33 @@ async function downloadModArchive(mod, stagingRoot) {
       throw new Error(`Download failed: ${response.status}`);
     }
 
-    const buffer = Buffer.from(await response.arrayBuffer());
-    await fsp.writeFile(archivePath, buffer);
+    const totalBytes = Number(response.headers.get("content-length") || source.archiveSizeBytes || source.sizeBytes || 0);
+    if (response.body && typeof response.body.getReader === "function") {
+      const reader = response.body.getReader();
+      const chunks = [];
+      let receivedBytes = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        const chunk = Buffer.from(value);
+        receivedBytes += chunk.length;
+        chunks.push(chunk);
+        onDownload({ bytesReceived: receivedBytes, bytesTotal: totalBytes });
+      }
+
+      await fsp.writeFile(archivePath, Buffer.concat(chunks));
+    } else {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      onDownload({ bytesReceived: buffer.length, bytesTotal: totalBytes || buffer.length });
+      await fsp.writeFile(archivePath, buffer);
+    }
   } else {
     await fsp.copyFile(normalizeLocalPath(url), archivePath);
+    const stats = await fsp.stat(archivePath);
+    onDownload({ bytesReceived: stats.size, bytesTotal: Number(source.archiveSizeBytes || source.sizeBytes || stats.size) });
   }
 
   if (source.archiveSha256) {

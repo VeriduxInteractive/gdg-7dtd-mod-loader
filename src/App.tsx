@@ -35,7 +35,8 @@ import type {
   ServerDirectory,
   ServerHealth,
   SyncPlanItem,
-  SyncPreview
+  SyncPreview,
+  SyncProgress
 } from "./types";
 
 const emptyConfig: LoaderConfig = {
@@ -68,9 +69,24 @@ function App() {
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("Ready");
   const [error, setError] = useState("");
+  const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
 
   useEffect(() => {
     void initialize();
+  }, []);
+
+  useEffect(() => {
+    const removeSyncProgress = window.gdg.onSyncProgress((progress) => {
+      setSyncProgress(progress);
+    });
+    const removeCloneProgress = window.gdg.onCloneProgress((progress) => {
+      setSyncProgress(progress);
+    });
+
+    return () => {
+      removeSyncProgress();
+      removeCloneProgress();
+    };
   }, []);
 
   useEffect(() => {
@@ -198,10 +214,13 @@ function App() {
     return saved;
   }
 
-  function clearSyncState() {
+  function clearSyncState(clearProgress = true) {
     setPreview(null);
     setApplyResult(null);
     setScan(null);
+    if (clearProgress) {
+      setSyncProgress(null);
+    }
   }
 
   async function updateGamePath(gamePath: string) {
@@ -292,6 +311,14 @@ function App() {
       return;
     }
 
+    setSyncProgress({
+      phase: "preparing",
+      message: "Preparing GDG copy.",
+      current: 0,
+      total: 0,
+      percent: 0
+    });
+
     await runTask("Creating GDG copy", async () => {
       const result = await window.gdg.cloneGameInstall({
         sourcePath: detected.path,
@@ -299,7 +326,7 @@ function App() {
         createShortcut
       });
 
-      clearSyncState();
+      clearSyncState(false);
       setLastClone(result);
       await updateConfig({ gamePath: result.targetPath });
       setSetupDismissed(true);
@@ -374,6 +401,14 @@ function App() {
   }
 
   async function applySync() {
+    setSyncProgress({
+      phase: "preparing",
+      message: "Starting mod sync.",
+      current: 0,
+      total: Math.max((preview?.summary.install || 0) + (preview?.summary.update || 0), 1),
+      percent: 0
+    });
+
     await runTask("Syncing mods", async () => {
       const result = await window.gdg.applySync({
         gamePath: config.gamePath,
@@ -738,6 +773,34 @@ function App() {
               </div>
             </section>
 
+            {syncProgress && (
+              <section className={`panel full sync-progress-panel ${syncProgress.phase}`}>
+                <div className="sync-progress-heading">
+                  <div>
+                    <span className="section-label">Progress</span>
+                    <h3>{getProgressTitle(syncProgress)}</h3>
+                  </div>
+                  <strong>{syncProgress.percent}%</strong>
+                </div>
+                <div className="gold-progress-track" aria-label="Sync progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={syncProgress.percent}>
+                  <div className="gold-progress-fill" style={{ width: `${syncProgress.percent}%` }} />
+                </div>
+                <div className="sync-progress-details">
+                  <span>{syncProgress.message}</span>
+                  <strong>
+                    {syncProgress.total > 0
+                      ? `${Math.min(syncProgress.current, syncProgress.total)} of ${syncProgress.total}`
+                      : "Ready"}
+                  </strong>
+                  {syncProgress.bytesTotal ? (
+                    <small>{formatBytes(syncProgress.bytesReceived || 0)} / {formatBytes(syncProgress.bytesTotal)}</small>
+                  ) : (
+                    <small>{formatSyncPhase(syncProgress.phase)}</small>
+                  )}
+                </div>
+              </section>
+            )}
+
             <section className="panel full">
               <div className="panel-heading">
                 <div>
@@ -967,6 +1030,40 @@ function formatBytes(bytes: number) {
   }
 
   return `${value} B`;
+}
+
+function formatSyncPhase(phase: SyncProgress["phase"]) {
+  const labels: Record<SyncProgress["phase"], string> = {
+    preparing: "Preparing files",
+    scanning: "Measuring game folder",
+    copying: "Copying game files",
+    shortcut: "Creating shortcut",
+    downloading: "Downloading package",
+    extracting: "Unpacking package",
+    "backing-up": "Saving backup",
+    installing: "Installing mod",
+    verifying: "Verifying install",
+    complete: "Done",
+    failed: "Needs attention"
+  };
+
+  return labels[phase];
+}
+
+function getProgressTitle(progress: SyncProgress) {
+  if (progress.message.toLowerCase().includes("gdg copy")) {
+    return progress.phase === "complete" ? "GDG copy ready" : "Creating GDG copy";
+  }
+
+  if (progress.phase === "scanning" || progress.phase === "copying" || progress.phase === "shortcut") {
+    return "Creating GDG copy";
+  }
+
+  if (progress.phase === "complete") {
+    return "Finished syncing";
+  }
+
+  return "Installing server mods";
 }
 
 function getServerSize(preview: SyncPreview | null, selectedHealth: ServerHealth | null) {

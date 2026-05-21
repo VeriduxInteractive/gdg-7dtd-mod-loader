@@ -990,6 +990,115 @@ input:focus {
   color: var(--muted);
 }
 
+.sync-progress-panel {
+  position: relative;
+  display: grid;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.sync-progress-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(241, 207, 119, 0.14), transparent 32%),
+    linear-gradient(90deg, rgba(217, 165, 54, 0.1), transparent 42%);
+}
+
+.sync-progress-panel > * {
+  position: relative;
+}
+
+.sync-progress-panel.failed {
+  border-color: rgba(255, 107, 107, 0.34);
+}
+
+.sync-progress-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.sync-progress-heading h3 {
+  margin: 0;
+}
+
+.sync-progress-heading > strong {
+  color: var(--gold-2);
+  font-size: 28px;
+  line-height: 1;
+  text-shadow: 0 0 20px rgba(217, 165, 54, 0.24);
+}
+
+.gold-progress-track {
+  height: 16px;
+  overflow: hidden;
+  border: 1px solid rgba(217, 165, 54, 0.34);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent),
+    rgba(2, 6, 8, 0.72);
+  box-shadow: inset 0 0 16px rgba(0, 0, 0, 0.48);
+}
+
+.gold-progress-fill {
+  position: relative;
+  min-width: 8px;
+  height: 100%;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, var(--gold), var(--gold-2), #fff0a8),
+    var(--gold);
+  box-shadow: 0 0 24px rgba(217, 165, 54, 0.42);
+  transition: width 180ms ease;
+}
+
+.gold-progress-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(110deg, transparent 0%, rgba(255, 255, 255, 0.34) 42%, transparent 72%);
+  animation: progressShine 1.35s linear infinite;
+}
+
+.sync-progress-details {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.sync-progress-details span,
+.sync-progress-details small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-progress-details strong {
+  color: #fff7df;
+}
+
+.sync-progress-details small {
+  color: var(--gold-2);
+}
+
+@keyframes progressShine {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(100%);
+  }
+}
+
 .mod-table,
 .installed-list,
 .log-list,
@@ -1207,6 +1316,11 @@ input:focus {
 
   .metric-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .sync-progress-details {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
 }
 

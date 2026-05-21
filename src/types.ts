@@ -95,6 +95,28 @@ export type ApplyResult = {
   preview: SyncPreview;
 };
 
+export type SyncProgress = {
+  phase:
+    | "preparing"
+    | "scanning"
+    | "copying"
+    | "shortcut"
+    | "downloading"
+    | "extracting"
+    | "backing-up"
+    | "installing"
+    | "verifying"
+    | "complete"
+    | "failed";
+  message: string;
+  modName?: string;
+  current: number;
+  total: number;
+  percent: number;
+  bytesReceived?: number;
+  bytesTotal?: number;
+};
+
 export type CloneGameResult = {
   ok: boolean;
   sourcePath: string;
@@ -159,9 +181,11 @@ export type GdgApi = {
   checkServerHealth: (server: DirectoryServer) => Promise<ServerHealth>;
   getDiskSpace: (gamePath: string) => Promise<DiskSpace>;
   cloneGameInstall: (payload: { sourcePath: string; folderName?: string; createShortcut?: boolean }) => Promise<CloneGameResult>;
+  onCloneProgress: (callback: (progress: SyncProgress) => void) => () => void;
   scanMods: (gamePath: string) => Promise<ScanResult>;
   previewSync: (payload: { gamePath: string; manifestInput: string }) => Promise<SyncPreview>;
   applySync: (payload: { gamePath: string; manifestInput: string }) => Promise<ApplyResult>;
+  onSyncProgress: (callback: (progress: SyncProgress) => void) => () => void;
   launchGame: (payload: { gamePath: string; eacEnabled: boolean }) => Promise<LaunchGameResult>;
   openPath: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
 };
