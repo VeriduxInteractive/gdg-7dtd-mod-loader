@@ -2,11 +2,12 @@
   "distribution": "all-except-private",
   "serverOnlyMods": [
     "PrismaCore",
-    "0_TFP_Harmony"
+    "TFP_CommandExtensions",
+    "TFP_MapRendering",
+    "TFP_WebServer"
   ],
   "serverOnlyPrefixes": [
-    "GDG",
-    "TFP_"
+    "GDG"
   ],
   "extraClientPackages": [
     {
