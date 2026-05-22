@@ -567,8 +567,20 @@ button:disabled {
   min-height: 70px;
   padding: 14px;
   color: var(--ink);
-  background: transparent;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.052), rgba(255, 255, 255, 0.018)),
+    rgba(255, 255, 255, 0.025);
   text-align: left;
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.step-section-header:hover {
+  border-color: rgba(217, 165, 54, 0.28);
+  background:
+    linear-gradient(180deg, rgba(217, 165, 54, 0.13), rgba(255, 255, 255, 0.026)),
+    rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(217, 165, 54, 0.12);
 }
 
 .step-section-header > span {
@@ -625,8 +637,19 @@ button:disabled {
 
 .step-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.step-actions .secondary,
+.step-actions .primary {
+  min-width: 170px;
+  height: 46px;
+  border-width: 1px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 12px 26px rgba(0, 0, 0, 0.22);
 }
 
 .flow-steps {
@@ -988,21 +1011,45 @@ button:disabled {
 .setup-options {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .setup-option {
+  position: relative;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 34px minmax(0, 1fr);
   align-items: start;
-  gap: 10px;
-  min-height: 108px;
-  padding: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  gap: 12px;
+  min-height: 122px;
+  padding: 15px;
+  border: 1px solid rgba(217, 165, 54, 0.24);
   border-radius: 8px;
   color: var(--ink);
-  background: rgba(255, 255, 255, 0.04);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.022)),
+    rgba(255, 255, 255, 0.04);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 14px 30px rgba(0, 0, 0, 0.2);
   text-align: left;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.setup-option::after {
+  content: "Select";
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  min-height: 22px;
+  padding: 3px 8px;
+  border: 1px solid rgba(217, 165, 54, 0.28);
+  border-radius: 999px;
+  color: var(--gold-2);
+  background: rgba(217, 165, 54, 0.09);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
 }
 
 .setup-option:hover,
@@ -1013,6 +1060,17 @@ button:disabled {
 .input-row button:hover {
   border-color: var(--line-strong);
   color: #fff7df;
+}
+
+.setup-option:hover {
+  transform: translateY(-1px);
+  background:
+    linear-gradient(180deg, rgba(217, 165, 54, 0.16), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.045);
+  box-shadow:
+    inset 0 0 0 1px rgba(217, 165, 54, 0.12),
+    0 18px 38px rgba(0, 0, 0, 0.28),
+    0 0 30px rgba(217, 165, 54, 0.08);
 }
 
 .setup-option:disabled:hover,
@@ -1029,6 +1087,7 @@ button:disabled {
   display: grid;
   gap: 3px;
   min-width: 0;
+  padding-right: 34px;
 }
 
 .setup-option strong,
@@ -1060,15 +1119,33 @@ button:disabled {
 }
 
 .setup-option.overwrite svg {
+  width: 30px;
+  height: 30px;
+  padding: 5px;
+  border: 1px solid rgba(240, 180, 75, 0.24);
+  border-radius: 8px;
   color: var(--amber);
+  background: rgba(240, 180, 75, 0.09);
 }
 
 .setup-option.copy svg {
+  width: 30px;
+  height: 30px;
+  padding: 5px;
+  border: 1px solid rgba(217, 165, 54, 0.32);
+  border-radius: 8px;
   color: var(--gold-2);
+  background: rgba(217, 165, 54, 0.12);
 }
 
 .setup-option.decline svg {
+  width: 30px;
+  height: 30px;
+  padding: 5px;
+  border: 1px solid rgba(154, 163, 165, 0.18);
+  border-radius: 8px;
   color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .shortcut-toggle {
@@ -1167,6 +1244,7 @@ input:focus {
   color: rgba(247, 240, 220, 0.34);
   background: rgba(255, 255, 255, 0.025);
   box-shadow: none;
+  transform: none;
 }
 
 .primary:disabled svg,
@@ -1176,6 +1254,12 @@ input:focus {
 .mini-icon:disabled svg,
 .setup-option:disabled svg {
   color: rgba(247, 240, 220, 0.28);
+}
+
+.setup-option:disabled::after {
+  border-color: rgba(255, 255, 255, 0.06);
+  color: rgba(247, 240, 220, 0.28);
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .secondary,

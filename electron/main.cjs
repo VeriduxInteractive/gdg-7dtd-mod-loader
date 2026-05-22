@@ -25,8 +25,13 @@ let updateState = {
   latestVersion: "",
   updateAvailable: false,
   releaseUrl: LOADER_RELEASES_URL,
+  assetName: "",
+  assetUrl: "",
+  assetKind: "",
   error: ""
 };
+
+let promptedUpdateVersion = "";
 
 process.on("uncaughtException", (error) => {
   void appendDiagnosticLog("uncaughtException", error);
@@ -64,7 +69,7 @@ app.whenReady().then(() => {
   updateApplicationMenu();
   createWindow();
   setTimeout(() => {
-    void checkForLoaderUpdate({ silent: true });
+    void checkForLoaderUpdate({ silent: true, promptOnUpdate: true });
   }, 1500);
   setInterval(() => {
     void checkForLoaderUpdate({ silent: true });
@@ -274,9 +279,13 @@ function updateApplicationMenu() {
         },
         { type: "separator" },
         {
-          label: updateState.updateAvailable ? `Download v${updateState.latestVersion}` : "Open Releases",
+          label: updateState.updateAvailable ? `Install v${updateState.latestVersion}` : "Open Releases",
           click: () => {
-            void shell.openExternal(updateState.releaseUrl || LOADER_RELEASES_URL);
+            if (updateState.updateAvailable && updateState.assetUrl) {
+              void installLoaderUpdate();
+            } else {
+              void shell.openExternal(updateState.releaseUrl || LOADER_RELEASES_URL);
+            }
           }
         },
         {
@@ -311,6 +320,10 @@ async function openDiagnosticLog() {
 function getUpdateStatusLabel() {
   if (updateState.status === "checking") {
     return "Checking for updates...";
+  }
+
+  if (updateState.status === "downloading") {
+    return `Downloading v${updateState.latestVersion}...`;
   }
 
   if (updateState.updateAvailable) {
@@ -353,6 +366,7 @@ async function checkForLoaderUpdate(options = {}) {
     const latestVersion = normalizeVersion(release.tag_name || release.name || "");
     const currentVersion = normalizeVersion(app.getVersion());
     const updateAvailable = compareVersions(latestVersion, currentVersion) > 0;
+    const updateAsset = findLoaderUpdateAsset(release);
 
     updateState = {
       status: "ready",
@@ -360,25 +374,25 @@ async function checkForLoaderUpdate(options = {}) {
       latestVersion,
       updateAvailable,
       releaseUrl: release.html_url || LOADER_RELEASES_URL,
+      assetName: updateAsset?.name || "",
+      assetUrl: updateAsset?.browser_download_url || "",
+      assetKind: updateAsset?.kind || "",
       error: ""
     };
     updateApplicationMenu();
 
-    if (!options.silent && mainWindow) {
-      if (updateAvailable) {
-        const result = await dialog.showMessageBox(mainWindow, {
-          type: "info",
-          buttons: ["Download", "Later"],
-          defaultId: 0,
-          cancelId: 1,
-          title: "GDG Mod Loader Update",
-          message: `GDG Mod Loader v${latestVersion} is available.`,
-          detail: `You are currently running v${currentVersion}. Download the newest release from GitHub.`
-        });
+    const shouldPrompt =
+      mainWindow &&
+      updateAvailable &&
+      (options.promptOnUpdate || !options.silent) &&
+      promptedUpdateVersion !== latestVersion;
 
-        if (result.response === 0) {
-          await shell.openExternal(updateState.releaseUrl);
-        }
+    if (shouldPrompt) {
+      promptedUpdateVersion = latestVersion;
+      await promptForLoaderUpdate();
+    } else if (!options.silent && mainWindow) {
+      if (updateAvailable) {
+        await promptForLoaderUpdate();
       } else {
         await dialog.showMessageBox(mainWindow, {
           type: "info",
@@ -412,6 +426,164 @@ async function checkForLoaderUpdate(options = {}) {
 
     return updateState;
   }
+}
+
+function findLoaderUpdateAsset(release) {
+  const assets = Array.isArray(release.assets) ? release.assets : [];
+  const setup = assets.find((asset) => /setup\.exe$/i.test(asset.name || ""));
+  if (setup) {
+    return { ...setup, kind: "setup" };
+  }
+
+  const portable = assets.find((asset) => /portable\.exe$/i.test(asset.name || ""));
+  if (portable) {
+    return { ...portable, kind: "portable" };
+  }
+
+  return null;
+}
+
+async function promptForLoaderUpdate() {
+  const hasInstaller = Boolean(updateState.assetUrl);
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: "info",
+    buttons: [hasInstaller ? "Install Update" : "Open Download Page", "Later"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "GDG Mod Loader Update",
+    message: `GDG Mod Loader v${updateState.latestVersion} is available.`,
+    detail: hasInstaller
+      ? `You are currently running v${updateState.currentVersion}. GDG can download ${updateState.assetName} and start the update installer for you.`
+      : `You are currently running v${updateState.currentVersion}. No installer asset was found, so GDG can open the release page.`
+  });
+
+  if (result.response !== 0) {
+    return;
+  }
+
+  if (hasInstaller) {
+    await installLoaderUpdate();
+  } else {
+    await shell.openExternal(updateState.releaseUrl || LOADER_RELEASES_URL);
+  }
+}
+
+async function installLoaderUpdate() {
+  if (!updateState.assetUrl) {
+    await shell.openExternal(updateState.releaseUrl || LOADER_RELEASES_URL);
+    return;
+  }
+
+  try {
+    updateState = { ...updateState, status: "downloading", error: "" };
+    updateApplicationMenu();
+
+    const updatesDir = path.join(app.getPath("temp"), "gdg-mod-loader-updates");
+    await fsp.mkdir(updatesDir, { recursive: true });
+    const installerName = sanitizeFolderName(updateState.assetName || `GDG-Mod-Loader-${updateState.latestVersion}-setup.exe`);
+    const installerPath = path.join(updatesDir, installerName);
+
+    await dialog.showMessageBox(mainWindow, {
+      type: "info",
+      buttons: ["OK"],
+      title: "Installing Update",
+      message: `Downloading GDG Mod Loader v${updateState.latestVersion}.`,
+      detail: "The installer will open when the download finishes. Close GDG Mod Loader when the installer asks."
+    });
+
+    await downloadUrlToFile(updateState.assetUrl, installerPath);
+
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: "info",
+      buttons: ["Start Installer", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "Update Ready",
+      message: `GDG Mod Loader v${updateState.latestVersion} is ready to install.`,
+      detail:
+        updateState.assetKind === "portable"
+          ? "GDG downloaded the new portable app. Start it now and close this older version."
+          : "GDG will start the installer now and close this older version."
+    });
+
+    if (result.response !== 0) {
+      updateState = { ...updateState, status: "ready" };
+      updateApplicationMenu();
+      return;
+    }
+
+    const child = spawn(installerPath, [], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false
+    });
+    child.unref();
+    setTimeout(() => app.quit(), 500);
+  } catch (error) {
+    updateState = { ...updateState, status: "error", error: error.message };
+    updateApplicationMenu();
+    await appendDiagnosticLog("loader-update-install", error, {
+      assetName: updateState.assetName,
+      assetUrl: updateState.assetUrl
+    });
+    await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: ["Open Release Page", "OK"],
+      defaultId: 0,
+      title: "Update Install Failed",
+      message: "GDG could not install the update automatically.",
+      detail: error.message
+    }).then((result) => {
+      if (result.response === 0) {
+        void shell.openExternal(updateState.releaseUrl || LOADER_RELEASES_URL);
+      }
+    });
+  }
+}
+
+async function downloadUrlToFile(url, targetPath) {
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent": "GDG-Mod-Loader"
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Update download failed: ${response.status}`);
+  }
+
+  await fsp.rm(targetPath, { force: true }).catch(() => {});
+
+  if (response.body && typeof response.body.getReader === "function") {
+    const reader = response.body.getReader();
+    const writeStream = fs.createWriteStream(targetPath, { flags: "wx" });
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (!writeStream.write(Buffer.from(value))) {
+          await once(writeStream, "drain");
+        }
+      }
+    } catch (error) {
+      writeStream.destroy();
+      await fsp.rm(targetPath, { force: true }).catch(() => {});
+      throw error;
+    }
+
+    await new Promise((resolve, reject) => {
+      writeStream.end(resolve);
+      writeStream.once("error", reject);
+    });
+  } else {
+    const buffer = Buffer.from(await response.arrayBuffer());
+    await fsp.writeFile(targetPath, buffer);
+  }
+
+  return targetPath;
 }
 
 async function deleteSelectedGdgCopy() {
