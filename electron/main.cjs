@@ -617,7 +617,7 @@ async function cloneGameInstall(payload = {}, onProgress = () => {}) {
 async function copyDirectoryWithProgress(sourceRoot, targetRoot, onProgress) {
   reportCloneProgress(onProgress, {
     phase: "scanning",
-    message: "Scanning game files.",
+    message: "Scanning game files. Existing mods will not be copied.",
     current: 0,
     total: 0,
     percent: 1
@@ -681,6 +681,9 @@ async function buildCopyPlan(sourceRoot, targetRoot) {
     for (const entry of entries) {
       const sourcePath = path.join(currentSource, entry.name);
       const relativePath = path.relative(sourceRoot, sourcePath);
+      if (isExcludedGameCopyPath(relativePath)) {
+        continue;
+      }
       const targetPath = path.join(targetRoot, relativePath);
 
       if (entry.isDirectory()) {
@@ -700,6 +703,11 @@ async function buildCopyPlan(sourceRoot, targetRoot) {
 
   await visit(sourceRoot);
   return { directories, files, totalBytes };
+}
+
+function isExcludedGameCopyPath(relativePath) {
+  const normalized = String(relativePath || "").replace(/\\/g, "/").toLowerCase();
+  return normalized === "mods" || normalized.startsWith("mods/");
 }
 
 async function copyFileWithProgress(sourcePath, targetPath, onChunk) {

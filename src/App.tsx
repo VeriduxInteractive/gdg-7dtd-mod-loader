@@ -671,7 +671,7 @@ function App() {
                         <strong>Choose how GDG should prepare 7 Days to Die.</strong>
                         <p>
                           GDG can keep your normal game untouched by making a separate modded copy, or it can sync mods into the
-                          detected install below.
+                          detected install below. A new GDG copy starts with an empty Mods folder.
                         </p>
                         <small>{detectedSetupLabel}: {detected?.path}</small>
                         {detected?.isGdgCopy && <small>This already looks like a GDG copy. Browse for your Steam install if you want to overwrite vanilla.</small>}
@@ -694,7 +694,7 @@ function App() {
                         <Copy size={20} />
                         <span>
                           <strong>Create GDG copy <em>Recommended</em></strong>
-                          <small>Make a separate folder named 7 Days To Die - GDG so vanilla stays clean.</small>
+                          <small>Make a separate folder named 7 Days To Die - GDG with a clean Mods folder.</small>
                         </span>
                       </button>
                       <button className="setup-option decline" type="button" onClick={declineGameSetup} disabled={working}>
