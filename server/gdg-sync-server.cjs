@@ -104,7 +104,9 @@ async function publish(args) {
       host: args.publicHost || args["public-host"] || "",
       port: Number(args.gamePort || args["game-port"] || 26900),
       syncUrl: `${baseUrl}/gdg-sync/manifest.json`,
-      eacEnabled: resolveOptionalBoolean(args.eac !== undefined ? args.eac : args["eac-enabled"], serverConfig.eacEnabled)
+      eacEnabled: resolveOptionalBoolean(args.eac !== undefined ? args.eac : args["eac-enabled"], serverConfig.eacEnabled),
+      gameVersion: String(args.gameVersion || args["game-version"] || "").trim(),
+      steamBuildId: String(args.steamBuildId || args["steam-build-id"] || "").trim()
     },
     mods
   });
@@ -139,6 +141,8 @@ async function publish(args) {
     externalClientCount: externalClientMods.length,
     externalPackageCount: externalClientPackages.length,
     eacEnabled: manifest.server.eacEnabled,
+    gameVersion: manifest.server.gameVersion,
+    steamBuildId: manifest.server.steamBuildId,
     policy,
     baseUrl
   };
@@ -681,6 +685,8 @@ function printPublishResult(result) {
   console.log(`Published ${result.modCount} mods`);
   console.log(`Package size: ${formatBytes(result.totalPackageBytes)}`);
   console.log(`Server EAC: ${typeof result.eacEnabled === "boolean" ? (result.eacEnabled ? "on" : "off") : "unknown"}`);
+  console.log(`Required game version: ${result.gameVersion || "not set"}`);
+  console.log(`Required Steam build: ${result.steamBuildId || "not set"}`);
   console.log(`Skipped ${result.skippedCount} server-only/private mods`);
   console.log(`Extra client-only mods: ${result.externalClientCount}`);
   console.log(`Extra client-only packages: ${result.externalPackageCount}`);
@@ -726,6 +732,8 @@ Common options:
   --server-name <name>     Friendly server name
   --public-host <host>     Game server host shown to clients
   --game-port <port>       7DTD game port, default 26900
+  --game-version <version> Human-readable required game version shown to players, e.g. 2.6 Stable
+  --steam-build-id <id>    Required Steam client build id from appmanifest_251570.acf
   --port <port>            HTTP sync endpoint port, default 8787
   --host <host>            HTTP bind host, default 0.0.0.0
   --exclude <csv>          Mod folders not published, default GDGSyncClient,GDGSyncServer

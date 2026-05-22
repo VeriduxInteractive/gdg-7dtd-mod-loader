@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("gdg", {
   loadServerDirectory: (input) => ipcRenderer.invoke("gdg:load-server-directory", { input }),
   checkServerHealth: (server) => ipcRenderer.invoke("gdg:check-server-health", { server }),
   getDiskSpace: (gamePath) => ipcRenderer.invoke("gdg:get-disk-space", { gamePath }),
+  getGameVersion: (gamePath) => ipcRenderer.invoke("gdg:get-game-version", { gamePath }),
   cloneGameInstall: (payload) => ipcRenderer.invoke("gdg:clone-game-install", payload),
   onCloneProgress: (callback) => {
     const listener = (_event, progress) => callback(progress);
@@ -30,5 +31,7 @@ contextBridge.exposeInMainWorld("gdg", {
     return () => ipcRenderer.removeListener("gdg:game-copy-deleted", listener);
   },
   launchGame: (payload) => ipcRenderer.invoke("gdg:launch-game", payload),
+  openSteamUpdate: () => ipcRenderer.invoke("gdg:open-steam-update"),
+  openDiagnosticLog: () => ipcRenderer.invoke("gdg:open-diagnostic-log"),
   openPath: (filePath) => ipcRenderer.invoke("gdg:open-path", { filePath })
 });

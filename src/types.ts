@@ -63,9 +63,30 @@ export type ServerManifest = {
     port?: number;
     syncUrl?: string;
     eacEnabled?: boolean | null;
+    gameVersion?: string;
+    steamBuildId?: string;
   };
   generatedAt?: string;
   mods: ManifestMod[];
+};
+
+export type GameVersionInfo = {
+  gamePath: string;
+  steamAppId: string;
+  steamAppManifestPath: string;
+  steamBuildId: string;
+  steamUpdateState: string;
+  steamInstallDir: string;
+  canOpenSteamUpdate: boolean;
+};
+
+export type GameCompatibility = {
+  ok: boolean;
+  checked: boolean;
+  reason: string;
+  local: GameVersionInfo;
+  requiredGameVersion?: string;
+  requiredSteamBuildId?: string;
 };
 
 export type SyncAction = "ready" | "install" | "update" | "blocked" | "keep";
@@ -80,6 +101,7 @@ export type SyncPlanItem = {
 export type SyncPreview = {
   manifest: ServerManifest;
   local: ScanResult;
+  gameCompatibility: GameCompatibility;
   plan: SyncPlanItem[];
   summary: Record<SyncAction, number>;
   downloadBytes: number;
@@ -94,8 +116,9 @@ export type ApplyResult = {
   failedCount?: number;
   failures?: Array<{ modName: string; error: string }>;
   backupRoot: string;
+  diagnosticLogPath?: string;
   log: string[];
-  preview: SyncPreview;
+  preview: SyncPreview | null;
 };
 
 export type SyncProgress = {
@@ -167,6 +190,8 @@ export type ServerHealth = {
   generatedAt: string;
   serverName: string;
   eacEnabled: boolean | null;
+  gameVersion?: string;
+  steamBuildId?: string;
   error?: string;
 };
 
@@ -185,6 +210,7 @@ export type GdgApi = {
   loadServerDirectory: (input?: string) => Promise<ServerDirectory>;
   checkServerHealth: (server: DirectoryServer) => Promise<ServerHealth>;
   getDiskSpace: (gamePath: string) => Promise<DiskSpace>;
+  getGameVersion: (gamePath: string) => Promise<GameVersionInfo>;
   cloneGameInstall: (payload: { sourcePath: string; folderName?: string; createShortcut?: boolean }) => Promise<CloneGameResult>;
   onCloneProgress: (callback: (progress: SyncProgress) => void) => () => void;
   scanMods: (gamePath: string) => Promise<ScanResult>;
@@ -194,5 +220,7 @@ export type GdgApi = {
   onSyncProgress: (callback: (progress: SyncProgress) => void) => () => void;
   onGameCopyDeleted: (callback: (payload: { config: LoaderConfig; detected: DetectedGame; deletedPath: string }) => void) => () => void;
   launchGame: (payload: { gamePath: string; eacEnabled: boolean }) => Promise<LaunchGameResult>;
+  openSteamUpdate: () => Promise<{ ok: boolean; error?: string }>;
+  openDiagnosticLog: () => Promise<{ ok: boolean; error?: string; path: string }>;
   openPath: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
 };

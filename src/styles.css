@@ -744,6 +744,48 @@ button:disabled {
   white-space: nowrap;
 }
 
+.version-guard {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 62px;
+  padding: 12px;
+  border: 1px solid rgba(66, 209, 154, 0.22);
+  border-radius: 8px;
+  color: var(--green);
+  background: rgba(66, 209, 154, 0.08);
+}
+
+.version-guard.warn {
+  border-color: rgba(240, 180, 75, 0.34);
+  color: var(--amber);
+  background: rgba(240, 180, 75, 0.1);
+}
+
+.version-guard span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.version-guard strong,
+.version-guard small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.version-guard strong {
+  color: #fff7df;
+}
+
+.version-guard small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .install-summary,
 .copy-result {
   display: grid;
@@ -1618,12 +1660,14 @@ input:focus {
   }
 
   .install-summary,
-  .copy-result {
+  .copy-result,
+  .version-guard {
     grid-template-columns: 24px minmax(0, 1fr);
   }
 
   .install-summary button,
-  .copy-result button {
+  .copy-result button,
+  .version-guard button {
     grid-column: 2;
     justify-self: start;
   }

@@ -13,7 +13,9 @@ The loader currently supports `zip` packages. Each archive must contain one fold
     "name": "Golden Days Gaming",
     "host": "play.goldendaysgaming.example",
     "port": 26900,
-    "eacEnabled": false
+    "eacEnabled": false,
+    "gameVersion": "2.6 Stable",
+    "steamBuildId": "required-client-steam-build-id"
   },
   "mods": [
     {
@@ -46,6 +48,8 @@ The loader currently supports `zip` packages. Each archive must contain one fold
 - `folderSizeBytes` lets clients estimate installed disk space before syncing.
 - `folderSha256` verifies the installed mod folder during preview.
 - `server.eacEnabled` tells clients whether the 7 Days to Die server expects Easy Anti-Cheat on or off. When published by `gdg-sync-server`, this is read from `serverconfig.xml` property `EACEnabled` when available.
+- `server.gameVersion` is the friendly game version players see when the server requires a specific 7 Days to Die version.
+- `server.steamBuildId` lets the loader compare the player's local Steam build from `appmanifest_251570.acf` before installing or launching. If it differs, the loader blocks install/launch and opens Steam's validate/update flow for the player.
 
 ## 7 Days to Die Notes
 

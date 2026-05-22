@@ -28,6 +28,14 @@ The publisher cleans the generated `packages` folder every time it publishes. Th
 npm run server:publish -- --game-root "D:\7dtd-server" --base-url "https://mods.goldendaysgaming.com"
 ```
 
+To make the loader block players on the wrong 7 Days to Die build, publish the server's expected version and Steam client build id:
+
+```bash
+npm run server:publish -- --game-root "D:\7dtd-server" --base-url "https://mods.goldendaysgaming.com" --game-version "2.6 Stable" --steam-build-id "PASTE_BUILD_ID_HERE"
+```
+
+The Steam build id comes from the client Steam app manifest, usually `...\SteamLibrary\steamapps\appmanifest_251570.acf`, in the `"buildid"` field.
+
 Output:
 
 ```text

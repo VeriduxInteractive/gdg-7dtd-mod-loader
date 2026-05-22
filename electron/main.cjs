@@ -11,6 +11,7 @@ const yauzl = require("yauzl");
 
 const GAME_ID = "7dtd";
 const GAME_NAME = "7 Days to Die";
+const STEAM_APP_ID = "251570";
 const CONFIG_VERSION = 1;
 const DEFAULT_SERVER_DIRECTORY = path.join(__dirname, "..", "server-directory", "gdg.servers.sample.json");
 const LOADER_RELEASE_API_URL = "https://api.github.com/repos/VeriduxInteractive/gdg-7dtd-mod-loader/releases/latest";
@@ -26,6 +27,14 @@ let updateState = {
   releaseUrl: LOADER_RELEASES_URL,
   error: ""
 };
+
+process.on("uncaughtException", (error) => {
+  void appendDiagnosticLog("uncaughtException", error);
+});
+
+process.on("unhandledRejection", (error) => {
+  void appendDiagnosticLog("unhandledRejection", error);
+});
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -133,9 +142,13 @@ function registerIpc() {
     return getDiskSpace(payload.gamePath);
   });
 
+  ipcMain.handle("gdg:get-game-version", async (_event, payload) => {
+    return getGameVersionInfo(payload.gamePath);
+  });
+
   ipcMain.handle("gdg:clone-game-install", async (event, payload) => {
     return cloneGameInstall(payload, (progress) => {
-      event.sender.send("gdg:clone-progress", progress);
+      sendIpcProgress(event, "gdg:clone-progress", progress);
     });
   });
 
@@ -148,19 +161,49 @@ function registerIpc() {
   });
 
   ipcMain.handle("gdg:apply-sync", async (event, payload) => {
-    return applySync(payload, (progress) => {
-      event.sender.send("gdg:sync-progress", progress);
-    });
+    try {
+      return await applySync(payload, (progress) => {
+        sendIpcProgress(event, "gdg:sync-progress", progress);
+      });
+    } catch (error) {
+      await appendDiagnosticLog("gdg:apply-sync", error, {
+        gamePath: payload?.gamePath,
+        manifestInput: payload?.manifestInput
+      });
+      return createFailedApplyResult(payload, error, (progress) => {
+        sendIpcProgress(event, "gdg:sync-progress", progress);
+      });
+    }
   });
 
   ipcMain.handle("gdg:clean-local-mods", async (event, payload) => {
     return cleanLocalMods(payload, (progress) => {
-      event.sender.send("gdg:sync-progress", progress);
+      sendIpcProgress(event, "gdg:sync-progress", progress);
     });
   });
 
   ipcMain.handle("gdg:launch-game", async (_event, payload) => {
     return launchGame(payload);
+  });
+
+  ipcMain.handle("gdg:open-steam-update", async () => {
+    try {
+      await shell.openExternal(`steam://validate/${STEAM_APP_ID}`);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle("gdg:open-diagnostic-log", async () => {
+    const logPath = getDiagnosticLogPath();
+    await fsp.mkdir(path.dirname(logPath), { recursive: true });
+    if (!(await exists(logPath))) {
+      await fsp.writeFile(logPath, "GDG Mod Loader diagnostic log\n", "utf8");
+    }
+
+    const result = await shell.openPath(logPath);
+    return result ? { ok: false, error: result, path: logPath } : { ok: true, path: logPath };
   });
 
   ipcMain.handle("gdg:open-path", async (_event, payload) => {
@@ -184,6 +227,12 @@ function updateApplicationMenu() {
           label: "Delete Existing GDG Copy...",
           click: () => {
             void deleteSelectedGdgCopy();
+          }
+        },
+        {
+          label: "Open Diagnostic Log",
+          click: () => {
+            void openDiagnosticLog();
           }
         },
         { type: "separator" },
@@ -248,6 +297,15 @@ function updateApplicationMenu() {
   ];
 
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+async function openDiagnosticLog() {
+  const logPath = getDiagnosticLogPath();
+  await fsp.mkdir(path.dirname(logPath), { recursive: true });
+  if (!(await exists(logPath))) {
+    await fsp.writeFile(logPath, "GDG Mod Loader diagnostic log\n", "utf8");
+  }
+  await shell.openPath(logPath);
 }
 
 function getUpdateStatusLabel() {
@@ -487,6 +545,53 @@ function getDefaultConfig() {
 
 function getConfigPath() {
   return path.join(app.getPath("userData"), "gdg-mod-loader-config.json");
+}
+
+function getDiagnosticLogPath() {
+  const basePath = app.isReady() ? app.getPath("userData") : path.join(os.homedir(), "AppData", "Roaming", "GDG Mod Loader");
+  return path.join(basePath, "logs", "gdg-mod-loader.log");
+}
+
+async function appendDiagnosticLog(scope, error, details = {}) {
+  try {
+    const logPath = getDiagnosticLogPath();
+    const entry = {
+      at: new Date().toISOString(),
+      scope,
+      error: serializeError(error),
+      details
+    };
+    await fsp.mkdir(path.dirname(logPath), { recursive: true });
+    await fsp.appendFile(logPath, `${JSON.stringify(entry)}\n`, "utf8");
+  } catch {
+    // Diagnostics should never become the user's real error.
+  }
+}
+
+function serializeError(error) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack || ""
+    };
+  }
+
+  return {
+    name: "Error",
+    message: String(error || "Unknown error"),
+    stack: ""
+  };
+}
+
+function sendIpcProgress(event, channel, payload) {
+  try {
+    if (!event.sender.isDestroyed()) {
+      event.sender.send(channel, payload);
+    }
+  } catch (error) {
+    void appendDiagnosticLog("ipc-progress-send", error, { channel, payload });
+  }
 }
 
 async function detectSevenDaysInstall() {
@@ -1000,6 +1105,7 @@ async function previewSync(payload) {
   const manifest = await loadManifest(manifestInput);
   validateManifest(manifest);
 
+  const gameCompatibility = compareGameCompatibility(manifest, await getGameVersionInfo(gamePath));
   const local = await scanMods(gamePath, { hash: true });
   const plan = buildSyncPlan(manifest, local.mods);
   const sizeSummary = getManifestSizeSummary(manifest);
@@ -1007,6 +1113,7 @@ async function previewSync(payload) {
   return {
     manifest,
     local,
+    gameCompatibility,
     plan,
     summary: summarizePlan(plan),
     ...sizeSummary
@@ -1015,6 +1122,10 @@ async function previewSync(payload) {
 
 async function applySync(payload, onProgress = () => {}) {
   const preview = await previewSync(payload);
+  if (preview.gameCompatibility.checked && !preview.gameCompatibility.ok) {
+    throw new Error(`${preview.gameCompatibility.reason} Update 7 Days to Die in Steam before installing GDG mods.`);
+  }
+
   const modsPath = path.join(payload.gamePath, "Mods");
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupRoot = path.join(app.getPath("userData"), "backups", timestamp);
@@ -1118,6 +1229,11 @@ async function applySync(payload, onProgress = () => {}) {
       });
       log.push(`Failed ${modName}: ${error.message}`);
       failures.push({ modName, error: error.message });
+      await appendDiagnosticLog("gdg:apply-sync-mod", error, {
+        modName,
+        modId: item.mod.id,
+        source: item.mod.source?.url || ""
+      });
     }
   }
 
@@ -1127,7 +1243,15 @@ async function applySync(payload, onProgress = () => {}) {
     current: total,
     total
   });
-  const nextPreview = await previewSync(payload);
+
+  let nextPreview = preview;
+  try {
+    nextPreview = await previewSync(payload);
+  } catch (error) {
+    log.push(`Failed final verification: ${error.message}`);
+    failures.push({ modName: "Final verification", error: error.message });
+  }
+
   if (failures.length > 0) {
     reportSyncProgress(onProgress, {
       phase: "failed",
@@ -1149,8 +1273,45 @@ async function applySync(payload, onProgress = () => {}) {
     failedCount: failures.length,
     failures,
     backupRoot: (await exists(backupRoot)) ? backupRoot : "",
+    diagnosticLogPath: failures.length > 0 ? getDiagnosticLogPath() : "",
     log,
     preview: nextPreview
+  };
+}
+
+async function createFailedApplyResult(payload, error, onProgress = () => {}) {
+  const message = error?.message || String(error || "Unknown sync error");
+  let preview = null;
+
+  reportSyncProgress(onProgress, {
+    phase: "failed",
+    message: `Sync failed: ${message}`,
+    current: 0,
+    total: 1
+  });
+
+  try {
+    if (payload?.gamePath && payload?.manifestInput) {
+      preview = await previewSync(payload);
+    }
+  } catch (previewError) {
+    await appendDiagnosticLog("gdg:apply-sync-preview-after-failure", previewError, {
+      gamePath: payload?.gamePath,
+      manifestInput: payload?.manifestInput
+    });
+  }
+
+  return {
+    ok: false,
+    failedCount: 1,
+    failures: [{ modName: "Sync", error: message }],
+    backupRoot: "",
+    diagnosticLogPath: getDiagnosticLogPath(),
+    log: [
+      `Sync failed: ${message}`,
+      `Diagnostic log: ${getDiagnosticLogPath()}`
+    ],
+    preview
   };
 }
 
@@ -1289,7 +1450,17 @@ async function cleanLocalMods(payload, onProgress = () => {}) {
     current: localOnly.length,
     total: localOnly.length
   });
-  const nextPreview = await previewSync(payload);
+  let nextPreview = preview;
+  try {
+    nextPreview = await previewSync(payload);
+  } catch (error) {
+    log.push(`Failed final verification: ${error.message}`);
+    failures.push({ modName: "Final verification", error: error.message });
+    await appendDiagnosticLog("gdg:clean-local-mods-final-preview", error, {
+      gamePath: payload?.gamePath,
+      manifestInput: payload?.manifestInput
+    });
+  }
 
   reportSyncProgress(onProgress, {
     phase: failures.length > 0 ? "failed" : "complete",
@@ -1308,6 +1479,7 @@ async function cleanLocalMods(payload, onProgress = () => {}) {
     failedCount: failures.length,
     failures,
     backupRoot: mode === "backup" ? backupRoot : "",
+    diagnosticLogPath: failures.length > 0 ? getDiagnosticLogPath() : "",
     log,
     preview: nextPreview
   };
@@ -1356,6 +1528,8 @@ async function checkServerHealth(server) {
       generatedAt: manifest.generatedAt || "",
       serverName: manifest.server?.name || server.name,
       eacEnabled: typeof manifest.server?.eacEnabled === "boolean" ? manifest.server.eacEnabled : null,
+      gameVersion: manifest.server?.gameVersion || "",
+      steamBuildId: manifest.server?.steamBuildId || "",
       ...getManifestSizeSummary(manifest)
     };
   } catch (error) {
@@ -1385,6 +1559,119 @@ async function getDiskSpace(gamePath) {
     path: probePath,
     freeBytes: Number(stats.bavail || 0) * blockSize,
     totalBytes: Number(stats.blocks || 0) * blockSize
+  };
+}
+
+async function getGameVersionInfo(gamePath) {
+  const resolvedGamePath = path.resolve(String(gamePath || ""));
+  const appManifestPath = findSteamAppManifestPath(resolvedGamePath);
+  const version = {
+    gamePath: resolvedGamePath,
+    steamAppId: STEAM_APP_ID,
+    steamAppManifestPath: "",
+    steamBuildId: "",
+    steamUpdateState: "",
+    steamInstallDir: "",
+    canOpenSteamUpdate: process.platform === "win32"
+  };
+
+  if (!appManifestPath || !(await exists(appManifestPath))) {
+    return version;
+  }
+
+  const text = await fsp.readFile(appManifestPath, "utf8");
+  const values = parseSteamAppManifest(text);
+
+  return {
+    ...version,
+    steamAppManifestPath: appManifestPath,
+    steamBuildId: values.buildid || "",
+    steamUpdateState: values.StateFlags || values.stateflags || "",
+    steamInstallDir: values.installdir || ""
+  };
+}
+
+function findSteamAppManifestPath(gamePath) {
+  if (!gamePath) {
+    return "";
+  }
+
+  const normalized = path.resolve(gamePath);
+  const commonDir = path.dirname(normalized);
+  if (path.basename(commonDir).toLowerCase() !== "common") {
+    return "";
+  }
+
+  const steamAppsDir = path.dirname(commonDir);
+  return path.join(steamAppsDir, `appmanifest_${STEAM_APP_ID}.acf`);
+}
+
+function parseSteamAppManifest(text) {
+  const values = {};
+  const matches = String(text || "").matchAll(/"([^"]+)"\s+"([^"]*)"/g);
+  for (const match of matches) {
+    values[match[1]] = match[2];
+  }
+  return values;
+}
+
+function compareGameCompatibility(manifest, localVersion) {
+  const requiredGameVersion = String(manifest.server?.gameVersion || "").trim();
+  const requiredSteamBuildId = String(manifest.server?.steamBuildId || "").trim();
+
+  if (!requiredGameVersion && !requiredSteamBuildId) {
+    return {
+      ok: true,
+      checked: false,
+      reason: "Server has not published a required game version yet.",
+      local: localVersion,
+      requiredGameVersion,
+      requiredSteamBuildId
+    };
+  }
+
+  if (requiredGameVersion && !requiredSteamBuildId) {
+    return {
+      ok: true,
+      checked: false,
+      reason: `Server expects ${requiredGameVersion}, but no Steam build id was published for automatic comparison.`,
+      local: localVersion,
+      requiredGameVersion,
+      requiredSteamBuildId
+    };
+  }
+
+  if (requiredSteamBuildId) {
+    if (!localVersion.steamBuildId) {
+      return {
+        ok: false,
+        checked: true,
+        reason: "Steam build could not be detected for this game folder.",
+        local: localVersion,
+        requiredGameVersion,
+        requiredSteamBuildId
+      };
+    }
+
+    if (localVersion.steamBuildId !== requiredSteamBuildId) {
+      return {
+        ok: false,
+        checked: true,
+        reason: `Steam build ${localVersion.steamBuildId} does not match server build ${requiredSteamBuildId}.`,
+        local: localVersion,
+        requiredGameVersion,
+        requiredSteamBuildId
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    checked: true,
+    reason: requiredGameVersion ? `Game version matches ${requiredGameVersion}.` : "Steam build matches the server.",
+    local: localVersion,
+    requiredGameVersion,
+    requiredSteamBuildId
   };
 }
 
@@ -1647,6 +1934,54 @@ function reportCloneProgress(onProgress, progress) {
 }
 
 async function downloadModArchive(mod, stagingRoot, onDownload = () => {}) {
+  const maxAttempts = 3;
+  let lastError;
+  let attemptsUsed = 0;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    attemptsUsed = attempt;
+    try {
+      return await downloadModArchiveOnce(mod, stagingRoot, onDownload);
+    } catch (error) {
+      lastError = error;
+      await appendDiagnosticLog("download-mod-archive", error, {
+        mod: mod.name || mod.id,
+        url: mod.source?.url || "",
+        attempt,
+        maxAttempts
+      });
+      const fileName = sanitizeFolderName(`${mod.id || mod.name}.zip`);
+      await fsp.rm(path.join(stagingRoot, fileName), { force: true }).catch(() => {});
+      if (attempt < maxAttempts && isRetryableDownloadError(error)) {
+        await delay(750 * attempt);
+        continue;
+      }
+      break;
+    }
+  }
+
+  throw new Error(`Download failed after ${attemptsUsed} attempt${attemptsUsed === 1 ? "" : "s"}: ${lastError?.message || "Unknown download error"}`);
+}
+
+function isRetryableDownloadError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return (
+    message.includes("fetch failed") ||
+    message.includes("terminated") ||
+    message.includes("socket") ||
+    message.includes("timeout") ||
+    message.includes("econnreset") ||
+    message.includes("enotfound") ||
+    message.includes("network") ||
+    message.includes("download failed: 5")
+  );
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function downloadModArchiveOnce(mod, stagingRoot, onDownload = () => {}) {
   const source = mod.source || {};
   const url = source.url;
 

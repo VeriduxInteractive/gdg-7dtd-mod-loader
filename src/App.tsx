@@ -32,6 +32,7 @@ import type {
   DetectedGame,
   DiskSpace,
   DirectoryServer,
+  GameVersionInfo,
   LoaderConfig,
   ScanResult,
   ServerDirectory,
@@ -66,6 +67,7 @@ function App() {
   const [serverDirectory, setServerDirectory] = useState<ServerDirectory | null>(null);
   const [serverHealth, setServerHealth] = useState<Record<string, ServerHealth>>({});
   const [diskSpace, setDiskSpace] = useState<DiskSpace | null>(null);
+  const [gameVersion, setGameVersion] = useState<GameVersionInfo | null>(null);
   const [createShortcut, setCreateShortcut] = useState(true);
   const [lastClone, setLastClone] = useState<CloneGameResult | null>(null);
   const [setupDismissed, setSetupDismissed] = useState(false);
@@ -128,6 +130,34 @@ function App() {
     }
 
     void loadDiskSpace();
+
+    return () => {
+      canceled = true;
+    };
+  }, [config.gamePath]);
+
+  useEffect(() => {
+    let canceled = false;
+
+    async function inspectGameVersion() {
+      if (!config.gamePath) {
+        setGameVersion(null);
+        return;
+      }
+
+      try {
+        const result = await window.gdg.getGameVersion(config.gamePath);
+        if (!canceled) {
+          setGameVersion(result);
+        }
+      } catch {
+        if (!canceled) {
+          setGameVersion(null);
+        }
+      }
+    }
+
+    void inspectGameVersion();
 
     return () => {
       canceled = true;
@@ -464,8 +494,10 @@ function App() {
         manifestInput: config.manifestInput
       });
       setApplyResult(result);
-      setPreview(result.preview);
-      setScan(result.preview.local);
+      if (result.preview) {
+        setPreview(result.preview);
+        setScan(result.preview.local);
+      }
       setActiveTab("sync");
       if (!result.ok) {
         setError(`${result.failedCount || 1} mod install${result.failedCount === 1 ? "" : "s"} failed. Check the sync log below.`);
@@ -489,8 +521,10 @@ function App() {
         mode
       });
       setApplyResult(result);
-      setPreview(result.preview);
-      setScan(result.preview.local);
+      if (result.preview) {
+        setPreview(result.preview);
+        setScan(result.preview.local);
+      }
       setActiveTab("sync");
 
       if (result.canceled) {
@@ -527,6 +561,12 @@ function App() {
   }
 
   async function launchGame() {
+    if (gameVersionMismatch) {
+      setError("Update 7 Days to Die in Steam before launching this GDG modpack.");
+      setOpenStep("check");
+      return;
+    }
+
     setBusy("Launching game");
     setError("");
     setMessage("Launching game");
@@ -554,10 +594,35 @@ function App() {
     }
   }
 
+  async function openSteamUpdate() {
+    await runTask("Opening Steam", async () => {
+      const result = await window.gdg.openSteamUpdate();
+      if (!result.ok) {
+        throw new Error(result.error || "Steam could not be opened.");
+      }
+      setMessage("Steam opened");
+    });
+  }
+
+  async function openDiagnosticLog() {
+    await runTask("Opening diagnostics", async () => {
+      const result = await window.gdg.openDiagnosticLog();
+      if (!result.ok) {
+        throw new Error(result.error || "Diagnostic log could not be opened.");
+      }
+      setMessage("Diagnostic log opened");
+    });
+  }
+
   const working = Boolean(busy);
   const selectedHealth = selectedServer ? serverHealth[selectedServer.id] : null;
   const selectedServerName = selectedServer?.name || preview?.manifest.server.name || "Golden Days Gaming";
   const serverEacEnabled = typeof preview?.manifest.server.eacEnabled === "boolean" ? preview.manifest.server.eacEnabled : selectedHealth?.eacEnabled ?? null;
+  const requiredGameVersion = preview?.gameCompatibility.requiredGameVersion || selectedHealth?.gameVersion || "";
+  const requiredSteamBuildId = preview?.gameCompatibility.requiredSteamBuildId || selectedHealth?.steamBuildId || "";
+  const gameCompatibility = preview?.gameCompatibility || null;
+  const gameVersionMismatch = Boolean(gameCompatibility?.checked && !gameCompatibility.ok);
+  const gameVersionKnown = Boolean(gameVersion?.steamBuildId);
   const serverSize = getServerSize(preview, selectedHealth);
   const freeSpaceTone = getFreeSpaceTone(diskSpace?.freeBytes, serverSize.bytes, serverSize.known);
   const currentScan = scan && normalizePath(scan.gamePath) === normalizePath(config.gamePath) ? scan : null;
@@ -568,6 +633,8 @@ function App() {
   const eacWarning = (hasDllMods && Boolean(config.launchWithEac)) || eacMismatch;
   const launchHint = !scanMatchesGame
     ? "Checking installed mods for DLL files."
+    : gameVersionMismatch
+      ? "Update 7 Days to Die in Steam before launching."
     : eacMismatch
       ? `Server EAC is ${serverEacEnabled ? "on" : "off"}. Match this before launching.`
     : hasDllMods
@@ -579,7 +646,7 @@ function App() {
   const setupStepState = config.gamePath ? "done" : "active";
   const checkStepState = preview ? "done" : config.gamePath && config.manifestInput ? "active" : "waiting";
   const installStepState = !preview ? "waiting" : modsToInstall > 0 ? "active" : "done";
-  const launchStepState = preview && modsToInstall === 0 && !preview.summary.blocked ? "active" : "waiting";
+  const launchStepState = preview && modsToInstall === 0 && !preview.summary.blocked && !gameVersionMismatch ? "active" : "waiting";
 
   useEffect(() => {
     if (!config.gamePath) {
@@ -657,7 +724,7 @@ function App() {
             <strong>{config.gamePath ? "Ready to launch" : "Choose game folder"}</strong>
             <small>Launch EAC {config.launchWithEac ? "on" : "off"} - server {serverEacLabel.toLowerCase()}</small>
           </div>
-          <button className="sidebar-launch-button" type="button" onClick={launchGame} disabled={working || !config.gamePath}>
+          <button className="sidebar-launch-button" type="button" onClick={launchGame} disabled={working || !config.gamePath || gameVersionMismatch}>
             <Play size={17} />
             Launch Game
           </button>
@@ -847,6 +914,35 @@ function App() {
                       </div>
                     )}
 
+                    {(requiredGameVersion || requiredSteamBuildId || gameVersionKnown || gameVersionMismatch) && (
+                      <div className={`version-guard ${gameVersionMismatch ? "warn" : "ok"}`}>
+                        {gameVersionMismatch ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}
+                        <span>
+                          <strong>{gameVersionMismatch ? "Game update needed" : "Game version check"}</strong>
+                          <small>
+                            {gameVersionMismatch
+                              ? gameCompatibility?.reason
+                              : requiredGameVersion
+                                ? `Server expects ${requiredGameVersion}${requiredSteamBuildId ? ` / Steam build ${requiredSteamBuildId}` : ""}.`
+                                : requiredSteamBuildId
+                                  ? `Server expects Steam build ${requiredSteamBuildId}.`
+                                  : "Server has not published a required game version yet."}
+                          </small>
+                          <small>
+                            {gameVersionKnown
+                              ? `This PC has Steam build ${gameVersion?.steamBuildId}.`
+                              : "Steam build not detected for this folder."}
+                          </small>
+                        </span>
+                        {gameVersionMismatch && (
+                          <button className="secondary slim" type="button" onClick={openSteamUpdate} disabled={working}>
+                            <RefreshCw size={16} />
+                            Open Steam Update
+                          </button>
+                        )}
+                      </div>
+                    )}
+
                     <label>
                       <span>Server sync endpoint</span>
                       <small className="field-help">This is the server mod list. Most players should leave the GDG server URL as-is.</small>
@@ -909,7 +1005,7 @@ function App() {
                         <Trash2 size={17} />
                         Delete Local-Only
                       </button>
-                      <button className="primary" type="button" onClick={applySync} disabled={working || !preview || Boolean(preview.summary.blocked) || modsToInstall === 0}>
+                      <button className="primary" type="button" onClick={applySync} disabled={working || !preview || gameVersionMismatch || Boolean(preview.summary.blocked) || modsToInstall === 0}>
                         <Download size={17} />
                         Install Missing Mods
                       </button>
@@ -956,7 +1052,7 @@ function App() {
                             EAC Off
                           </button>
                         </div>
-                        <button className="primary launch-button" type="button" onClick={launchGame} disabled={working || !config.gamePath}>
+                        <button className="primary launch-button" type="button" onClick={launchGame} disabled={working || !config.gamePath || gameVersionMismatch}>
                           <Play size={17} />
                           Launch
                         </button>
@@ -980,6 +1076,7 @@ function App() {
               </div>
               <div className="storage-grid">
                 <StorageStat icon={<Database size={16} />} label="Server mods" value={serverSize.known ? formatBytes(serverSize.bytes) : "Unknown"} tone="gold" />
+                <StorageStat icon={<RefreshCw size={16} />} label="Game version" value={requiredGameVersion || requiredSteamBuildId || "Not set"} tone={gameVersionMismatch ? "red" : requiredGameVersion || requiredSteamBuildId ? "green" : "muted"} />
                 <StorageStat icon={serverEacEnabled ? <ShieldCheck size={16} /> : <ShieldOff size={16} />} label="Server EAC" value={serverEacLabel} tone={serverEacEnabled === null ? "muted" : serverEacEnabled ? "green" : "amber"} />
                 <StorageStat icon={<HardDrive size={16} />} label="Free space" value={diskSpace ? formatBytes(diskSpace.freeBytes) : "Unknown"} tone={freeSpaceTone} />
               </div>
@@ -1047,6 +1144,10 @@ function App() {
                       Backup
                     </button>
                   )}
+                  <button className="secondary slim" type="button" onClick={openDiagnosticLog}>
+                    <FolderOpen size={16} />
+                    Diagnostics
+                  </button>
                 </div>
                 <div className="log-list">
                   {applyResult.log.map((line) => (
@@ -1119,6 +1220,9 @@ function App() {
               <SettingItem label="Detected install" value={detected?.found ? detected.path : "Not found"} />
               <SettingItem label="Install type" value={installProfile.label} />
               <SettingItem label="Saved game folder" value={config.gamePath || "Not set"} />
+              <SettingItem label="Local Steam build" value={gameVersion?.steamBuildId || "Unknown"} />
+              <SettingItem label="Server game version" value={requiredGameVersion || "Not published"} />
+              <SettingItem label="Server Steam build" value={requiredSteamBuildId || "Not published"} />
               <SettingItem label="Server EAC" value={serverEacLabel} />
               <SettingItem label="Launch EAC" value={config.launchWithEac ? "On" : "Off"} />
               <SettingItem label="DLL mod warning" value={hasDllMods ? `${dllMods.length} mod${dllMods.length === 1 ? "" : "s"} detected` : scanMatchesGame ? "No DLL mods detected" : "Checking"} />
