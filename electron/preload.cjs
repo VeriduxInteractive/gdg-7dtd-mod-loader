@@ -18,10 +18,16 @@ contextBridge.exposeInMainWorld("gdg", {
   scanMods: (gamePath) => ipcRenderer.invoke("gdg:scan-mods", { gamePath }),
   previewSync: (payload) => ipcRenderer.invoke("gdg:preview-sync", payload),
   applySync: (payload) => ipcRenderer.invoke("gdg:apply-sync", payload),
+  cleanLocalMods: (payload) => ipcRenderer.invoke("gdg:clean-local-mods", payload),
   onSyncProgress: (callback) => {
     const listener = (_event, progress) => callback(progress);
     ipcRenderer.on("gdg:sync-progress", listener);
     return () => ipcRenderer.removeListener("gdg:sync-progress", listener);
+  },
+  onGameCopyDeleted: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("gdg:game-copy-deleted", listener);
+    return () => ipcRenderer.removeListener("gdg:game-copy-deleted", listener);
   },
   launchGame: (payload) => ipcRenderer.invoke("gdg:launch-game", payload),
   openPath: (filePath) => ipcRenderer.invoke("gdg:open-path", { filePath })

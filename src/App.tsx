@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ChevronDown,
   CheckCircle2,
   Copy,
   Database,
@@ -18,6 +19,7 @@ import {
   ShieldCheck,
   ShieldOff,
   Sparkles,
+  Trash2,
   UploadCloud,
   Wifi,
   Wrench,
@@ -52,6 +54,8 @@ const emptyConfig: LoaderConfig = {
 const sampleSyncEndpoint = "http://40.160.20.5:8787/gdg-sync/manifest.json";
 
 type Tab = "sync" | "installed" | "settings";
+type LivePlanStatus = "active" | "ready" | "failed";
+type GuidedStepId = "setup" | "check" | "install" | "launch";
 
 function App() {
   const [config, setConfig] = useState<LoaderConfig>(emptyConfig);
@@ -70,6 +74,8 @@ function App() {
   const [message, setMessage] = useState("Ready");
   const [error, setError] = useState("");
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
+  const [livePlanStatuses, setLivePlanStatuses] = useState<Record<string, LivePlanStatus>>({});
+  const [openStep, setOpenStep] = useState<GuidedStepId | "">("setup");
 
   useEffect(() => {
     void initialize();
@@ -78,14 +84,25 @@ function App() {
   useEffect(() => {
     const removeSyncProgress = window.gdg.onSyncProgress((progress) => {
       setSyncProgress(progress);
+      updateLivePlanStatus(progress);
     });
     const removeCloneProgress = window.gdg.onCloneProgress((progress) => {
       setSyncProgress(progress);
+    });
+    const removeGameCopyDeleted = window.gdg.onGameCopyDeleted((payload) => {
+      setConfig(payload.config);
+      setDetected(payload.detected);
+      setLastClone(null);
+      setSetupDismissed(false);
+      setMessage("GDG copy deleted");
+      setActiveTab("sync");
+      clearSyncState();
     });
 
     return () => {
       removeSyncProgress();
       removeCloneProgress();
+      removeGameCopyDeleted();
     };
   }, []);
 
@@ -147,16 +164,21 @@ function App() {
 
   const nextAction = useMemo(() => {
     if (!preview) {
-      return "Preview sync";
+      return "Check mods";
     }
 
     const work = (preview.summary.install || 0) + (preview.summary.update || 0);
+    const localOnly = preview.summary.keep || 0;
     if (preview.summary.blocked) {
       return `${preview.summary.blocked} blocked`;
     }
 
     if (work > 0) {
       return `${work} change${work === 1 ? "" : "s"} ready`;
+    }
+
+    if (localOnly > 0) {
+      return `${localOnly} local-only`;
     }
 
     return "In sync";
@@ -208,6 +230,15 @@ function App() {
     }
   }
 
+  function guardBusyInteraction(event: React.SyntheticEvent<HTMLElement>) {
+    if (!working) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
   async function updateConfig(patch: Partial<LoaderConfig>) {
     const saved = await window.gdg.saveConfig(patch);
     setConfig(saved);
@@ -221,6 +252,7 @@ function App() {
     if (clearProgress) {
       setSyncProgress(null);
     }
+    setLivePlanStatuses({});
   }
 
   async function updateGamePath(gamePath: string) {
@@ -388,19 +420,36 @@ function App() {
   }
 
   async function previewSync() {
-    await runTask("Previewing sync", async () => {
+    setSyncProgress({
+      phase: "scanning",
+      message: "Checking your Mods folder against the server list.",
+      current: 0,
+      total: 1,
+      percent: 8
+    });
+
+    await runTask("Checking server mods", async () => {
       const result = await window.gdg.previewSync({
         gamePath: config.gamePath,
         manifestInput: config.manifestInput
       });
+      setLivePlanStatuses({});
       setPreview(result);
       setScan(result.local);
       setApplyResult(null);
       setActiveTab("sync");
+      setSyncProgress({
+        phase: "complete",
+        message: "Server mod check complete.",
+        current: 1,
+        total: 1,
+        percent: 100
+      });
     });
   }
 
   async function applySync() {
+    setLivePlanStatuses({});
     setSyncProgress({
       phase: "preparing",
       message: "Starting mod sync.",
@@ -422,6 +471,53 @@ function App() {
         setError(`${result.failedCount || 1} mod install${result.failedCount === 1 ? "" : "s"} failed. Check the sync log below.`);
       }
     });
+  }
+
+  async function cleanLocalMods(mode: "backup" | "delete") {
+    setSyncProgress({
+      phase: "preparing",
+      message: mode === "delete" ? "Preparing to delete local-only mods." : "Preparing to move local-only mods to backup.",
+      current: 0,
+      total: Math.max(localOnlyMods, 1),
+      percent: 0
+    });
+
+    await runTask(mode === "delete" ? "Deleting local-only mods" : "Cleaning local-only mods", async () => {
+      const result = await window.gdg.cleanLocalMods({
+        gamePath: config.gamePath,
+        manifestInput: config.manifestInput,
+        mode
+      });
+      setApplyResult(result);
+      setPreview(result.preview);
+      setScan(result.preview.local);
+      setActiveTab("sync");
+
+      if (result.canceled) {
+        setMessage("Clean canceled");
+      } else if (!result.ok) {
+        setError(`${result.failedCount || 1} local-only mod${result.failedCount === 1 ? "" : "s"} could not be ${mode === "delete" ? "deleted" : "moved"}. Check the log below.`);
+      } else if (mode === "delete") {
+        setMessage("Local-only mods deleted");
+      } else {
+        setMessage("Local-only mods moved to backup");
+      }
+    });
+  }
+
+  function updateLivePlanStatus(progress: SyncProgress) {
+    const statusKey = progress.modKey || progress.modName;
+    if (!statusKey) {
+      return;
+    }
+
+    if (["downloading", "extracting", "backing-up", "installing"].includes(progress.phase)) {
+      setLivePlanStatuses((current) => ({ ...current, [statusKey]: "active" }));
+    } else if (progress.phase === "installed") {
+      setLivePlanStatuses((current) => ({ ...current, [statusKey]: "ready" }));
+    } else if (progress.phase === "failed") {
+      setLivePlanStatuses((current) => ({ ...current, [statusKey]: "failed" }));
+    }
   }
 
   async function updateLaunchWithEac(launchWithEac: boolean) {
@@ -478,9 +574,38 @@ function App() {
       ? `${dllMods.length} DLL mod${dllMods.length === 1 ? "" : "s"} detected. EAC off recommended.`
       : "No DLL mods detected in the selected install.";
   const serverEacLabel = typeof serverEacEnabled === "boolean" ? (serverEacEnabled ? "On" : "Off") : "Unknown";
+  const modsToInstall = preview ? (preview.summary.install || 0) + (preview.summary.update || 0) : 0;
+  const localOnlyMods = preview?.summary.keep || 0;
+  const setupStepState = config.gamePath ? "done" : "active";
+  const checkStepState = preview ? "done" : config.gamePath && config.manifestInput ? "active" : "waiting";
+  const installStepState = !preview ? "waiting" : modsToInstall > 0 ? "active" : "done";
+  const launchStepState = preview && modsToInstall === 0 && !preview.summary.blocked ? "active" : "waiting";
+
+  useEffect(() => {
+    if (!config.gamePath) {
+      setOpenStep("setup");
+    } else if (!preview) {
+      setOpenStep("check");
+    } else if (modsToInstall > 0 || preview.summary.blocked > 0 || localOnlyMods > 0) {
+      setOpenStep("install");
+    } else {
+      setOpenStep("launch");
+    }
+  }, [config.gamePath, preview, modsToInstall, localOnlyMods]);
 
   return (
-    <main className="app-shell">
+    <main
+      className={`app-shell ${working ? "is-busy" : ""}`}
+      onClickCapture={guardBusyInteraction}
+      onContextMenuCapture={guardBusyInteraction}
+      onDoubleClickCapture={guardBusyInteraction}
+      onPointerDownCapture={guardBusyInteraction}
+    >
+      {working && (
+        <div className="busy-click-shield" aria-hidden="true">
+          <span>{busy}</span>
+        </div>
+      )}
       <aside className="sidebar">
         <div className="brand-mark">
           <div className="brand-icon">
@@ -572,201 +697,285 @@ function App() {
             <section className="panel wide">
               <div className="panel-heading">
                 <div>
-                  <span className="section-label">Sync Target</span>
+                  <span className="section-label">Guided Setup</span>
                   <h3>{selectedServerName}</h3>
+                  <p className="panel-description">Follow these steps from top to bottom. GDG will check your game folder, compare it to the server, then install only what is missing.</p>
                 </div>
-                <button className="icon-button" type="button" onClick={previewSync} disabled={working} title="Refresh preview">
+                <button className="icon-button" type="button" onClick={previewSync} disabled={working || !config.gamePath || !config.manifestInput} title="Check server mods">
                   <RefreshCw size={18} />
                 </button>
               </div>
 
-              <div className="path-stack">
-                {selectedServer && (
-                  <div className={`server-status-band ${selectedHealth?.ok ? "online" : "offline"}`}>
-                    <Wifi size={18} />
-                    <strong>{selectedHealth?.ok ? "Sync online" : "Sync not confirmed"}</strong>
-                    <span>
-                      {selectedHealth?.ok
-                        ? `${selectedHealth.modCount} client-safe mods - ${formatKnownBytes(selectedHealth.installedBytes, selectedHealth.installedSizeKnown)}${selectedHealth.generatedAt ? ` - updated ${formatDate(selectedHealth.generatedAt)}` : ""}`
-                        : selectedHealth?.error || "Refresh server status"}
-                    </span>
-                  </div>
-                )}
+              <div className="step-sections">
+                <StepSection
+                  number="1"
+                  title="Choose Game Folder"
+                  summary={config.gamePath ? `${installProfile.label} selected` : "Pick where GDG should prepare 7 Days to Die"}
+                  state={setupStepState}
+                  open={openStep === "setup"}
+                  onToggle={() => setOpenStep(openStep === "setup" ? "" : "setup")}
+                >
+                  <div className="step-body">
+                    <p className="step-copy">
+                      GDG can keep vanilla untouched by making a separate copy, or it can install mods into your existing 7 Days to Die folder.
+                    </p>
 
-                {config.gamePath && (
-                  <div className={`install-summary ${installProfile.tone}`}>
-                    <HardDrive size={18} />
-                    <span>
-                      <strong>{installProfile.label}</strong>
-                      <small>{config.gamePath}</small>
-                      <small>{diskSpace ? `${formatBytes(diskSpace.freeBytes)} free on this drive` : "Checking free space"}</small>
-                    </span>
-                    <button className="secondary slim" type="button" onClick={openGameFolder}>
-                      <FolderOpen size={16} />
-                      Open
-                    </button>
-                    <button className="secondary slim" type="button" onClick={changeInstallSetup} disabled={working}>
-                      <RotateCcw size={16} />
-                      Change
-                    </button>
-                  </div>
-                )}
-
-                {config.gamePath && (
-                  <div className={`launch-card ${eacWarning ? "warn" : "ready"}`}>
-                    <div className="launch-copy">
-                      {config.launchWithEac ? <ShieldCheck size={20} /> : <ShieldOff size={20} />}
-                      <span>
-                        <strong>Launch 7 Days to Die</strong>
-                        <small>{launchHint}</small>
-                        {hasDllMods && <small>DLL mods: {dllMods.map((mod) => mod.displayName).join(", ")}</small>}
-                      </span>
-                    </div>
-                    <div className="eac-toggle" role="group" aria-label="Easy Anti-Cheat launch mode">
-                      <button
-                        className={config.launchWithEac ? "active" : ""}
-                        type="button"
-                        onClick={() => void updateLaunchWithEac(true)}
-                        disabled={working}
-                      >
-                        <ShieldCheck size={16} />
-                        EAC On
-                      </button>
-                      <button
-                        className={!config.launchWithEac ? "active" : ""}
-                        type="button"
-                        onClick={() => void updateLaunchWithEac(false)}
-                        disabled={working}
-                      >
-                        <ShieldOff size={16} />
-                        EAC Off
-                      </button>
-                    </div>
-                    <button className="primary launch-button" type="button" onClick={launchGame} disabled={working || !config.gamePath}>
-                      <Play size={17} />
-                      Launch
-                    </button>
-                  </div>
-                )}
-
-                {lastClone?.targetPath === config.gamePath && (
-                  <div className="copy-result">
-                    <CheckCircle2 size={18} />
-                    <span>
-                      <strong>{lastClone.created ? "GDG copy created" : "GDG copy selected"}</strong>
-                      <small>{lastClone.targetPath}</small>
-                    </span>
-                    <button className="secondary slim" type="button" onClick={openLastCloneFolder}>
-                      <FolderOpen size={16} />
-                      Open
-                    </button>
-                  </div>
-                )}
-
-                {showSetupChoices && (
-                  <div className="setup-panel">
-                    <div className="setup-heading">
-                      <div>
-                        <span className="section-label">Game Setup</span>
-                        <strong>Choose how GDG should prepare 7 Days to Die.</strong>
-                        <p>
-                          GDG can keep your normal game untouched by making a separate modded copy, or it can sync mods into the
-                          detected install below. A new GDG copy starts with an empty Mods folder.
-                        </p>
-                        <small>{detectedSetupLabel}: {detected?.path}</small>
-                        {detected?.isGdgCopy && <small>This already looks like a GDG copy. Browse for your Steam install if you want to overwrite vanilla.</small>}
+                    {config.gamePath && (
+                      <div className={`install-summary ${installProfile.tone}`}>
+                        <HardDrive size={18} />
+                        <span>
+                          <strong>{installProfile.label}</strong>
+                          <small>{config.gamePath}</small>
+                          <small>{diskSpace ? `${formatBytes(diskSpace.freeBytes)} free on this drive` : "Checking free space"}</small>
+                        </span>
+                        <button className="secondary slim" type="button" onClick={openGameFolder}>
+                          <FolderOpen size={16} />
+                          Open
+                        </button>
+                        <button className="secondary slim" type="button" onClick={changeInstallSetup} disabled={working}>
+                          <RotateCcw size={16} />
+                          Change
+                        </button>
                       </div>
-                    </div>
+                    )}
 
-                    <div className="setup-options">
-                      <button className="setup-option overwrite" type="button" onClick={useDetectedInstall} disabled={working}>
-                        <AlertTriangle size={20} />
+                    {lastClone?.targetPath === config.gamePath && (
+                      <div className="copy-result">
+                        <CheckCircle2 size={18} />
                         <span>
-                          <strong>{detected?.isGdgCopy ? "Use detected GDG copy" : "Overwrite existing"}</strong>
-                          <small>
-                            {detected?.isGdgCopy
-                              ? "Select the detected modded copy. This will not point at your vanilla Steam folder."
-                              : "Use your current 7 Days to Die folder. GDG mods will be installed into this game."}
-                          </small>
+                          <strong>{lastClone.created ? "GDG copy created" : "GDG copy selected"}</strong>
+                          <small>{lastClone.targetPath}</small>
                         </span>
-                      </button>
-                      <button className="setup-option copy" type="button" onClick={createGdgCopy} disabled={working}>
-                        <Copy size={20} />
-                        <span>
-                          <strong>Create GDG copy <em>Recommended</em></strong>
-                          <small>Make a separate folder named 7 Days To Die - GDG with a clean Mods folder.</small>
-                        </span>
-                      </button>
-                      <button className="setup-option decline" type="button" onClick={declineGameSetup} disabled={working}>
-                        <XCircle size={20} />
-                        <span>
-                          <strong>Decline</strong>
-                          <small>Skip setup for now. You can browse for a folder or change setup later.</small>
-                        </span>
-                      </button>
-                    </div>
+                        <button className="secondary slim" type="button" onClick={openLastCloneFolder}>
+                          <FolderOpen size={16} />
+                          Open
+                        </button>
+                      </div>
+                    )}
 
-                    <label className="shortcut-toggle">
-                      <input type="checkbox" checked={createShortcut} onChange={(event) => setCreateShortcut(event.target.checked)} />
-                      <span>Create desktop shortcut for the GDG copy</span>
+                    {showSetupChoices && (
+                      <div className="setup-panel">
+                        <div className="setup-heading">
+                          <div>
+                            <span className="section-label">Game Setup</span>
+                            <strong>Choose how GDG should prepare 7 Days to Die.</strong>
+                            <p>
+                              A GDG copy is safest for most players. It creates a separate folder beside the detected game and starts with a clean Mods folder.
+                            </p>
+                            <small>{detectedSetupLabel}: {detected?.path}</small>
+                            {detected?.isGdgCopy && <small>This already looks like a GDG copy. Browse for your Steam install if you want to overwrite vanilla.</small>}
+                          </div>
+                        </div>
+
+                        <div className="setup-options">
+                          <button className="setup-option overwrite" type="button" onClick={useDetectedInstall} disabled={working}>
+                            <AlertTriangle size={20} />
+                            <span>
+                              <strong>{detected?.isGdgCopy ? "Use detected GDG copy" : "Overwrite existing"}</strong>
+                              <small>
+                                {detected?.isGdgCopy
+                                  ? "Select the detected modded copy. This will not point at your vanilla Steam folder."
+                                  : "Use your current 7 Days to Die folder. GDG mods will be installed into this game."}
+                              </small>
+                            </span>
+                          </button>
+                          <button className="setup-option copy" type="button" onClick={createGdgCopy} disabled={working}>
+                            <Copy size={20} />
+                            <span>
+                              <strong>Create GDG copy <em>Recommended</em></strong>
+                              <small>Make a separate folder named 7 Days To Die - GDG with a clean Mods folder.</small>
+                            </span>
+                          </button>
+                          <button className="setup-option decline" type="button" onClick={declineGameSetup} disabled={working}>
+                            <XCircle size={20} />
+                            <span>
+                              <strong>Decline</strong>
+                              <small>Skip setup for now. You can browse for a folder or change setup later.</small>
+                            </span>
+                          </button>
+                        </div>
+
+                        <label className="shortcut-toggle">
+                          <input type="checkbox" checked={createShortcut} onChange={(event) => setCreateShortcut(event.target.checked)} />
+                          <span>Create desktop shortcut for the GDG copy</span>
+                        </label>
+                      </div>
+                    )}
+
+                    <label>
+                      <span>Game folder</span>
+                      <small className="field-help">This is the 7 Days to Die folder GDG will check, sync, and launch.</small>
+                      <div className="input-row">
+                        <input
+                          value={config.gamePath}
+                          onChange={(event) => void updateGamePath(event.target.value)}
+                          placeholder="C:\Program Files (x86)\Steam\steamapps\common\7 Days To Die"
+                        />
+                        <button type="button" onClick={detectGame} disabled={working} title="Detect game">
+                          <Search size={17} />
+                        </button>
+                        <button type="button" onClick={browseGameFolder} disabled={working} title="Browse game folder">
+                          <FolderOpen size={17} />
+                        </button>
+                      </div>
                     </label>
                   </div>
-                )}
+                </StepSection>
 
-                <label>
-                  <span>Game folder</span>
-                  <div className="input-row">
-                    <input
-                      value={config.gamePath}
-                      onChange={(event) => void updateGamePath(event.target.value)}
-                      placeholder="C:\Program Files (x86)\Steam\steamapps\common\7 Days To Die"
-                    />
-                    <button type="button" onClick={detectGame} disabled={working} title="Detect game">
-                      <Search size={17} />
-                    </button>
-                    <button type="button" onClick={browseGameFolder} disabled={working} title="Browse game folder">
-                      <FolderOpen size={17} />
-                    </button>
+                <StepSection
+                  number="2"
+                  title="Check Server Mods"
+                  summary={preview ? `${preview.plan.length} mods checked against ${selectedServerName}` : "Compare your folder with the selected GDG server"}
+                  state={checkStepState}
+                  open={openStep === "check"}
+                  onToggle={() => setOpenStep(openStep === "check" ? "" : "check")}
+                >
+                  <div className="step-body">
+                    <p className="step-copy">
+                      This checks the server mod list and your selected folder. It does not install anything yet.
+                    </p>
+
+                    {selectedServer && (
+                      <div className={`server-status-band ${selectedHealth?.ok ? "online" : "offline"}`}>
+                        <Wifi size={18} />
+                        <strong>{selectedHealth?.ok ? "Sync online" : "Sync not confirmed"}</strong>
+                        <span>
+                          {selectedHealth?.ok
+                            ? `${selectedHealth.modCount} client-safe mods - ${formatKnownBytes(selectedHealth.installedBytes, selectedHealth.installedSizeKnown)}${selectedHealth.generatedAt ? ` - updated ${formatDate(selectedHealth.generatedAt)}` : ""}`
+                            : selectedHealth?.error || "Refresh server status"}
+                        </span>
+                      </div>
+                    )}
+
+                    <label>
+                      <span>Server sync endpoint</span>
+                      <small className="field-help">This is the server mod list. Most players should leave the GDG server URL as-is.</small>
+                      <div className="input-row">
+                        <input
+                          value={config.manifestInput}
+                          onChange={(event) => void updateManifestInput(event.target.value)}
+                          placeholder={sampleSyncEndpoint}
+                        />
+                        <button type="button" onClick={browseManifestFile} disabled={working} title="Browse manifest">
+                          <FolderOpen size={17} />
+                        </button>
+                      </div>
+                    </label>
+
+                    <div className="step-actions">
+                      <button className="secondary" type="button" onClick={previewSync} disabled={working || !config.gamePath || !config.manifestInput}>
+                        <ListChecks size={17} />
+                        Check Server Mods
+                      </button>
+                    </div>
                   </div>
-                </label>
+                </StepSection>
 
-                <label>
-                  <span>Server sync endpoint</span>
-                  <div className="input-row">
-                    <input
-                      value={config.manifestInput}
-                      onChange={(event) => void updateManifestInput(event.target.value)}
-                      placeholder={sampleSyncEndpoint}
-                    />
-                    <button type="button" onClick={browseManifestFile} disabled={working} title="Browse manifest">
-                      <FolderOpen size={17} />
-                    </button>
+                <StepSection
+                  number="3"
+                  title="Install Missing Mods"
+                  summary={
+                    preview
+                      ? modsToInstall > 0
+                        ? `${modsToInstall} change${modsToInstall === 1 ? "" : "s"} ready to install`
+                        : localOnlyMods > 0
+                          ? `${localOnlyMods} local-only mod${localOnlyMods === 1 ? "" : "s"} to review`
+                          : "No install needed"
+                      : "Check server mods first"
+                  }
+                  state={installStepState}
+                  open={openStep === "install"}
+                  onToggle={() => setOpenStep(openStep === "install" ? "" : "install")}
+                >
+                  <div className="step-body">
+                    <p className="step-copy">
+                      GDG will download missing packages, back up updated folders, and mark each mod ready as it finishes. Local-only mods are shown below but are not removed automatically.
+                    </p>
+                    {localOnlyMods > 0 && (
+                      <div className="local-only-warning">
+                        <AlertTriangle size={18} />
+                        <span>
+                          <strong>{localOnlyMods} local-only mod{localOnlyMods === 1 ? "" : "s"} detected</strong>
+                          <small>These are installed on this PC but are not part of the selected server package.</small>
+                        </span>
+                      </div>
+                    )}
+                    <div className="step-actions">
+                      <button className="secondary" type="button" onClick={() => void cleanLocalMods("backup")} disabled={working || !preview || localOnlyMods === 0}>
+                        <HardDrive size={17} />
+                        Move Local-Only to Backup
+                      </button>
+                      <button className="secondary danger" type="button" onClick={() => void cleanLocalMods("delete")} disabled={working || !preview || localOnlyMods === 0}>
+                        <Trash2 size={17} />
+                        Delete Local-Only
+                      </button>
+                      <button className="primary" type="button" onClick={applySync} disabled={working || !preview || Boolean(preview.summary.blocked) || modsToInstall === 0}>
+                        <Download size={17} />
+                        Install Missing Mods
+                      </button>
+                    </div>
                   </div>
-                </label>
-              </div>
+                </StepSection>
 
-              <div className="action-bar">
-                <button className="secondary" type="button" onClick={scanLocalMods} disabled={working || !config.gamePath}>
-                  <HardDrive size={17} />
-                  Scan
-                </button>
-                <button className="secondary" type="button" onClick={previewSync} disabled={working || !config.gamePath || !config.manifestInput}>
-                  <ListChecks size={17} />
-                  Preview
-                </button>
-                <button className="primary" type="button" onClick={applySync} disabled={working || !preview || Boolean(preview.summary.blocked)}>
-                  <Download size={17} />
-                  Sync
-                </button>
+                <StepSection
+                  number="4"
+                  title="Launch 7 Days to Die"
+                  summary={config.gamePath ? `Launch EAC ${config.launchWithEac ? "on" : "off"} - server ${serverEacLabel.toLowerCase()}` : "Choose a game folder first"}
+                  state={launchStepState}
+                  open={openStep === "launch"}
+                  onToggle={() => setOpenStep(openStep === "launch" ? "" : "launch")}
+                >
+                  <div className="step-body">
+                    {config.gamePath ? (
+                      <div className={`launch-card ${eacWarning ? "warn" : "ready"}`}>
+                        <div className="launch-copy">
+                          {config.launchWithEac ? <ShieldCheck size={20} /> : <ShieldOff size={20} />}
+                          <span>
+                            <strong>Launch 7 Days to Die</strong>
+                            <small>{launchHint}</small>
+                            {hasDllMods && <small>DLL mods: {dllMods.map((mod) => mod.displayName).join(", ")}</small>}
+                          </span>
+                        </div>
+                        <div className="eac-toggle" role="group" aria-label="Easy Anti-Cheat launch mode">
+                          <button
+                            className={config.launchWithEac ? "active" : ""}
+                            type="button"
+                            onClick={() => void updateLaunchWithEac(true)}
+                            disabled={working}
+                          >
+                            <ShieldCheck size={16} />
+                            EAC On
+                          </button>
+                          <button
+                            className={!config.launchWithEac ? "active" : ""}
+                            type="button"
+                            onClick={() => void updateLaunchWithEac(false)}
+                            disabled={working}
+                          >
+                            <ShieldOff size={16} />
+                            EAC Off
+                          </button>
+                        </div>
+                        <button className="primary launch-button" type="button" onClick={launchGame} disabled={working || !config.gamePath}>
+                          <Play size={17} />
+                          Launch
+                        </button>
+                      </div>
+                    ) : (
+                      <EmptyState icon={<Gamepad2 size={22} />} title="Game folder needed" value="Complete Step 1 before launching." />
+                    )}
+                  </div>
+                </StepSection>
               </div>
             </section>
 
             <section className="panel compact">
               <span className="section-label">Server Match</span>
               <div className="metric-grid">
-                <Metric label="Ready" value={preview?.summary.ready || 0} tone="green" />
+                <Metric label="Server ready" value={preview?.summary.ready || 0} tone="green" />
                 <Metric label="Install" value={preview?.summary.install || 0} tone="blue" />
                 <Metric label="Update" value={preview?.summary.update || 0} tone="amber" />
+                <Metric label="Local only" value={preview?.summary.keep || 0} tone="violet" />
                 <Metric label="Blocked" value={preview?.summary.blocked || 0} tone="red" />
               </div>
               <div className="storage-grid">
@@ -808,7 +1017,8 @@ function App() {
               <div className="panel-heading">
                 <div>
                   <span className="section-label">Sync Plan</span>
-                  <h3>{preview ? `${preview.plan.length} mod entries` : "No preview"}</h3>
+                  <h3>{preview ? `${preview.plan.length} checked mods` : "Mods not checked yet"}</h3>
+                  <p className="panel-description">Green rows match the server. Local-only rows are extra mods on this PC and are not removed automatically.</p>
                 </div>
                 <button className="secondary slim" type="button" onClick={openModsFolder} disabled={!config.gamePath}>
                   <FolderOpen size={16} />
@@ -818,9 +1028,9 @@ function App() {
 
               <div className="mod-table">
                 {(preview?.plan || []).map((item) => (
-                  <PlanRow key={`${item.action}-${item.mod.id}-${item.mod.folderName || item.mod.name}`} item={item} />
+                  <PlanRow key={`${item.action}-${item.mod.id}-${item.mod.folderName || item.mod.name}`} item={item} liveStatus={livePlanStatuses[getPlanKey(item)]} />
                 ))}
-              {!preview && <EmptyState icon={<ShieldCheck size={22} />} title="Preview pending" value="Select a GDG server sync endpoint" />}
+              {!preview && <EmptyState icon={<ShieldCheck size={22} />} title="Check pending" value="Click Check Server Mods to compare your game folder with the server." />}
               </div>
             </section>
 
@@ -954,24 +1164,70 @@ function StorageStat({ icon, label, value, tone }: { icon: React.ReactNode; labe
   );
 }
 
-function PlanRow({ item }: { item: SyncPlanItem }) {
-  const icon = {
-    ready: <CheckCircle2 size={18} />,
-    install: <Download size={18} />,
-    update: <RefreshCw size={18} />,
-    blocked: <AlertTriangle size={18} />,
-    keep: <HardDrive size={18} />
-  }[item.action];
+function StepSection({
+  number,
+  title,
+  summary,
+  state,
+  open,
+  onToggle,
+  children
+}: {
+  number: string;
+  title: string;
+  summary: string;
+  state: string;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <article className={`step-section ${state} ${open ? "open" : ""}`}>
+      <button className="step-section-header" type="button" onClick={onToggle} aria-expanded={open}>
+        <div className="step-number">{state === "done" ? <CheckCircle2 size={17} /> : number}</div>
+        <span>
+          <strong>{title}</strong>
+          <small>{summary}</small>
+        </span>
+        <ChevronDown size={18} />
+      </button>
+      {open && <div className="step-section-content">{children}</div>}
+    </article>
+  );
+}
+
+function PlanRow({ item, liveStatus }: { item: SyncPlanItem; liveStatus?: LivePlanStatus }) {
+  const action = liveStatus === "ready" ? "ready" : liveStatus === "failed" ? "blocked" : item.action;
+  const icon =
+    liveStatus === "active" ? (
+      <Loader2 size={18} className="spin" />
+    ) : (
+      {
+        ready: <CheckCircle2 size={18} />,
+        install: <Download size={18} />,
+        update: <RefreshCw size={18} />,
+        blocked: <AlertTriangle size={18} />,
+        keep: <HardDrive size={18} />
+      }[action]
+    );
+  const reason =
+    liveStatus === "active"
+      ? "Installing now"
+      : liveStatus === "ready"
+        ? "Ready"
+        : liveStatus === "failed"
+          ? "Failed"
+          : item.reason;
 
   return (
-    <article className={`plan-row ${item.action}`}>
+    <article className={`plan-row ${item.action} ${liveStatus || ""}`}>
       <div className="plan-icon">{icon}</div>
       <div className="plan-main">
         <strong>{item.mod.name}</strong>
         <span>{item.mod.folderName || item.mod.id}</span>
       </div>
       <div className="plan-version">{item.mod.version || item.installed?.version || "No version"}</div>
-      <div className="plan-reason">{item.reason}</div>
+      <div className="plan-reason">{reason}</div>
     </article>
   );
 }
@@ -1045,6 +1301,7 @@ function formatSyncPhase(phase: SyncProgress["phase"]) {
     extracting: "Unpacking package",
     "backing-up": "Saving backup",
     installing: "Installing mod",
+    installed: "Mod ready",
     verifying: "Verifying install",
     complete: "Done",
     failed: "Needs attention"
@@ -1053,7 +1310,23 @@ function formatSyncPhase(phase: SyncProgress["phase"]) {
   return labels[phase];
 }
 
+function getPlanKey(item: SyncPlanItem) {
+  return String(item.mod.folderName || item.mod.id || item.mod.name || "").toLowerCase();
+}
+
 function getProgressTitle(progress: SyncProgress) {
+  const message = progress.message.toLowerCase();
+  if (message.includes("local-only") || message.includes("moving") || message.includes("deleting")) {
+    if (progress.phase === "complete") {
+      return message.includes("deleted") ? "Local-only mods deleted" : "Local-only mods moved";
+    }
+    return message.includes("delete") || message.includes("deleting") ? "Deleting local-only mods" : "Moving local-only mods";
+  }
+
+  if (progress.message.toLowerCase().includes("server mod check") || progress.message.toLowerCase().includes("server list")) {
+    return progress.phase === "complete" ? "Server mods checked" : "Checking server mods";
+  }
+
   if (progress.message.toLowerCase().includes("gdg copy")) {
     return progress.phase === "complete" ? "GDG copy ready" : "Creating GDG copy";
   }

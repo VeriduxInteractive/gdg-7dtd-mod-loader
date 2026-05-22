@@ -17,7 +17,7 @@
     "TFP_"
   ],
   "extraClientMods": [
-    "/home/suaves/gdg-sync/client-mods/GDGClient"
+    "/path/to/gdg-sync/client-mods/GDGClient"
   ],
   "extraClientPackages": [
     {

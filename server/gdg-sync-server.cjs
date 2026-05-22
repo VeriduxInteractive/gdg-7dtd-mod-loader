@@ -18,10 +18,12 @@ const {
 
 const DEFAULT_EXCLUDES = ["GDGSyncClient", "GDGSyncServer"];
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -102,7 +104,7 @@ async function publish(args) {
       host: args.publicHost || args["public-host"] || "",
       port: Number(args.gamePort || args["game-port"] || 26900),
       syncUrl: `${baseUrl}/gdg-sync/manifest.json`,
-      eacEnabled: resolveOptionalBoolean(args.eac || args["eac-enabled"], serverConfig.eacEnabled)
+      eacEnabled: resolveOptionalBoolean(args.eac !== undefined ? args.eac : args["eac-enabled"], serverConfig.eacEnabled)
     },
     mods
   });
@@ -741,3 +743,10 @@ Examples:
   npm run server:serve -- --out "server-publish" --port 8787
 `);
 }
+
+module.exports = {
+  loadDistributionPolicy,
+  parseArgs,
+  publish,
+  serve
+};

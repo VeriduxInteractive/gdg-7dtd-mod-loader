@@ -5,7 +5,7 @@
     {
       "id": "gdg-test",
       "name": "GDG Test Server",
-      "description": "OVH Pterodactyl test server",
+      "description": "Golden Days Gaming sync server",
       "host": "40.160.20.5",
       "gamePort": 26900,
       "queryPort": 26901,

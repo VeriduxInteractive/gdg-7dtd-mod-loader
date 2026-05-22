@@ -90,6 +90,7 @@ export type SyncPreview = {
 
 export type ApplyResult = {
   ok: boolean;
+  canceled?: boolean;
   failedCount?: number;
   failures?: Array<{ modName: string; error: string }>;
   backupRoot: string;
@@ -107,11 +108,13 @@ export type SyncProgress = {
     | "extracting"
     | "backing-up"
     | "installing"
+    | "installed"
     | "verifying"
     | "complete"
     | "failed";
   message: string;
   modName?: string;
+  modKey?: string;
   current: number;
   total: number;
   percent: number;
@@ -187,7 +190,9 @@ export type GdgApi = {
   scanMods: (gamePath: string) => Promise<ScanResult>;
   previewSync: (payload: { gamePath: string; manifestInput: string }) => Promise<SyncPreview>;
   applySync: (payload: { gamePath: string; manifestInput: string }) => Promise<ApplyResult>;
+  cleanLocalMods: (payload: { gamePath: string; manifestInput: string; mode?: "backup" | "delete" }) => Promise<ApplyResult>;
   onSyncProgress: (callback: (progress: SyncProgress) => void) => () => void;
+  onGameCopyDeleted: (callback: (payload: { config: LoaderConfig; detected: DetectedGame; deletedPath: string }) => void) => () => void;
   launchGame: (payload: { gamePath: string; eacEnabled: boolean }) => Promise<LaunchGameResult>;
   openPath: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
 };

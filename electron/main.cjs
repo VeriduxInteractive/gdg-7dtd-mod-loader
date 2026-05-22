@@ -153,6 +153,12 @@ function registerIpc() {
     });
   });
 
+  ipcMain.handle("gdg:clean-local-mods", async (event, payload) => {
+    return cleanLocalMods(payload, (progress) => {
+      event.sender.send("gdg:sync-progress", progress);
+    });
+  });
+
   ipcMain.handle("gdg:launch-game", async (_event, payload) => {
     return launchGame(payload);
   });
@@ -174,6 +180,13 @@ function updateApplicationMenu() {
     {
       label: "File",
       submenu: [
+        {
+          label: "Delete Existing GDG Copy...",
+          click: () => {
+            void deleteSelectedGdgCopy();
+          }
+        },
+        { type: "separator" },
         { role: "quit" }
       ]
     },
@@ -340,6 +353,73 @@ async function checkForLoaderUpdate(options = {}) {
     }
 
     return updateState;
+  }
+}
+
+async function deleteSelectedGdgCopy() {
+  const config = await loadConfig();
+  const gamePath = config.gamePath;
+
+  if (!gamePath) {
+    await dialog.showMessageBox(mainWindow, {
+      type: "info",
+      buttons: ["OK"],
+      title: "Delete GDG Copy",
+      message: "No GDG copy is currently selected.",
+      detail: "Choose or create a GDG copy before using this option."
+    });
+    return;
+  }
+
+  if (!isGdgCopyPath(gamePath) || !(await isSevenDaysGameRoot(gamePath))) {
+    await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: ["OK"],
+      title: "Delete GDG Copy",
+      message: "GDG refused to delete the selected folder.",
+      detail: `This option only deletes folders named "7 Days To Die - GDG".\n\nSelected folder:\n${gamePath}`
+    });
+    return;
+  }
+
+  const confirmation = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    buttons: ["Delete GDG Copy", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: "Delete GDG Copy",
+    message: "Delete the selected GDG copy?",
+    detail: `This permanently deletes:\n${gamePath}\n\nYour vanilla Steam install is not touched.`
+  });
+
+  if (confirmation.response !== 0) {
+    return;
+  }
+
+  try {
+    await fsp.rm(gamePath, { recursive: true, force: true });
+    const nextConfig = await saveConfig({ gamePath: "" });
+    const detected = await detectSevenDaysInstall();
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("gdg:game-copy-deleted", { config: nextConfig, detected, deletedPath: gamePath });
+    }
+
+    await dialog.showMessageBox(mainWindow, {
+      type: "info",
+      buttons: ["OK"],
+      title: "Delete GDG Copy",
+      message: "GDG copy deleted.",
+      detail: gamePath
+    });
+  } catch (error) {
+    await dialog.showMessageBox(mainWindow, {
+      type: "error",
+      buttons: ["OK"],
+      title: "Delete GDG Copy Failed",
+      message: "GDG could not delete the selected copy.",
+      detail: error.message
+    });
   }
 }
 
@@ -958,12 +1038,14 @@ async function applySync(payload, onProgress = () => {}) {
   for (const [index, item] of actionable.entries()) {
     const current = index + 1;
     const modName = item.mod.name || item.mod.id;
+    const modKey = getProgressModKey(item.mod);
     try {
       log.push(`Preparing ${modName}.`);
       reportSyncProgress(onProgress, {
         phase: "downloading",
         message: `Downloading ${modName}.`,
         modName,
+        modKey,
         current,
         total
       });
@@ -972,6 +1054,7 @@ async function applySync(payload, onProgress = () => {}) {
           phase: "downloading",
           message: `Downloading ${modName}.`,
           modName,
+          modKey,
           current,
           total,
           bytesReceived: download.bytesReceived,
@@ -982,6 +1065,7 @@ async function applySync(payload, onProgress = () => {}) {
         phase: "extracting",
         message: `Unpacking ${modName}.`,
         modName,
+        modKey,
         current,
         total
       });
@@ -994,6 +1078,7 @@ async function applySync(payload, onProgress = () => {}) {
           phase: "backing-up",
           message: `Backing up ${folderName}.`,
           modName,
+          modKey,
           current,
           total
         });
@@ -1008,16 +1093,26 @@ async function applySync(payload, onProgress = () => {}) {
         phase: "installing",
         message: `Installing ${folderName}.`,
         modName,
+        modKey,
         current,
         total
       });
       await fsp.cp(sourceFolder, targetFolder, { recursive: true });
       log.push(`${item.action === "install" ? "Installed" : "Updated"} ${folderName}.`);
+      reportSyncProgress(onProgress, {
+        phase: "installed",
+        message: `${item.action === "install" ? "Installed" : "Updated"} ${folderName}.`,
+        modName,
+        modKey,
+        current,
+        total
+      });
     } catch (error) {
       reportSyncProgress(onProgress, {
         phase: "failed",
         message: `Failed ${modName}: ${error.message}`,
         modName,
+        modKey,
         current,
         total
       });
@@ -1054,6 +1149,165 @@ async function applySync(payload, onProgress = () => {}) {
     failedCount: failures.length,
     failures,
     backupRoot: (await exists(backupRoot)) ? backupRoot : "",
+    log,
+    preview: nextPreview
+  };
+}
+
+async function cleanLocalMods(payload, onProgress = () => {}) {
+  const preview = await previewSync(payload);
+  const modsPath = path.resolve(payload.gamePath, "Mods");
+  const localOnly = preview.plan.filter((item) => item.action === "keep" && item.installed?.folderPath);
+  const mode = payload.mode === "delete" ? "delete" : "backup";
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupRoot = path.join(app.getPath("userData"), "backups", timestamp, "local-only-mods");
+  const log = [];
+  const failures = [];
+
+  if (localOnly.length === 0) {
+    reportSyncProgress(onProgress, {
+      phase: "complete",
+      message: "No local-only mods found.",
+      current: 1,
+      total: 1
+    });
+
+    return {
+      ok: true,
+      failedCount: 0,
+      failures,
+      backupRoot: "",
+      log: ["No local-only mods found."],
+      preview
+    };
+  }
+
+  const confirmation = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    buttons: [mode === "delete" ? "Delete Permanently" : "Move to Backup", "Cancel"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "Clean Local-Only Mods",
+    message:
+      mode === "delete"
+        ? `Permanently delete ${localOnly.length} local-only mod${localOnly.length === 1 ? "" : "s"}?`
+        : `Move ${localOnly.length} local-only mod${localOnly.length === 1 ? "" : "s"} out of the selected Mods folder?`,
+    detail:
+      mode === "delete"
+        ? "These extra mods are installed on this PC but are not part of the selected server package. This does not create a backup."
+        : `GDG will move these extra mods into a backup folder:\n${backupRoot}\n\nThis does not delete them permanently.`
+  });
+
+  if (confirmation.response !== 0) {
+    reportSyncProgress(onProgress, {
+      phase: "complete",
+      message: "Local-only cleanup canceled.",
+      current: 1,
+      total: 1
+    });
+
+    return {
+      ok: false,
+      canceled: true,
+      failedCount: 0,
+      failures,
+      backupRoot: "",
+      log: ["Clean local-only mods canceled."],
+      preview
+    };
+  }
+
+  if (mode === "backup") {
+    await fsp.mkdir(backupRoot, { recursive: true });
+  }
+
+  reportSyncProgress(onProgress, {
+    phase: "preparing",
+    message: mode === "delete" ? `Preparing to delete ${localOnly.length} local-only mod${localOnly.length === 1 ? "" : "s"}.` : `Preparing to move ${localOnly.length} local-only mod${localOnly.length === 1 ? "" : "s"} to backup.`,
+    current: 0,
+    total: localOnly.length
+  });
+
+  for (const item of localOnly) {
+    const current = log.length + failures.length + 1;
+    const folderName = sanitizeFolderName(item.installed.folderName);
+    const sourcePath = path.resolve(item.installed.folderPath);
+    const backupTarget = mode === "backup" ? path.join(backupRoot, folderName) : "";
+
+    try {
+      if (!sourcePath.toLowerCase().startsWith(`${modsPath.toLowerCase()}${path.sep}`)) {
+        throw new Error("Mod folder is outside the selected Mods folder.");
+      }
+
+      if (mode === "backup") {
+        reportSyncProgress(onProgress, {
+          phase: "backing-up",
+          message: `Moving ${folderName} to backup.`,
+          modName: item.mod.name || folderName,
+          modKey: getProgressModKey(item.mod),
+          current,
+          total: localOnly.length
+        });
+        await fsp.cp(sourcePath, backupTarget, { recursive: true });
+      } else {
+        reportSyncProgress(onProgress, {
+          phase: "installing",
+          message: `Deleting ${folderName}.`,
+          modName: item.mod.name || folderName,
+          modKey: getProgressModKey(item.mod),
+          current,
+          total: localOnly.length
+        });
+      }
+      await fsp.rm(sourcePath, { recursive: true, force: true });
+      log.push(mode === "delete" ? `Deleted ${folderName}.` : `Moved ${folderName} to backup.`);
+      reportSyncProgress(onProgress, {
+        phase: "installed",
+        message: mode === "delete" ? `Deleted ${folderName}.` : `Moved ${folderName} to backup.`,
+        modName: item.mod.name || folderName,
+        modKey: getProgressModKey(item.mod),
+        current,
+        total: localOnly.length
+      });
+    } catch (error) {
+      reportSyncProgress(onProgress, {
+        phase: "failed",
+        message: `Failed ${folderName}: ${error.message}`,
+        modName: item.mod.name || folderName,
+        modKey: getProgressModKey(item.mod),
+        current,
+        total: localOnly.length
+      });
+      log.push(`Failed ${folderName}: ${error.message}`);
+      failures.push({ modName: item.mod.name || folderName, error: error.message });
+    }
+  }
+
+  reportSyncProgress(onProgress, {
+    phase: "verifying",
+    message: "Checking local-only cleanup.",
+    current: localOnly.length,
+    total: localOnly.length
+  });
+  const nextPreview = await previewSync(payload);
+
+  reportSyncProgress(onProgress, {
+    phase: failures.length > 0 ? "failed" : "complete",
+    message:
+      failures.length > 0
+        ? `Local-only cleanup finished with ${failures.length} failure${failures.length === 1 ? "" : "s"}.`
+        : mode === "delete"
+          ? "Local-only mods deleted."
+          : "Local-only mods moved to backup.",
+    current: localOnly.length - failures.length,
+    total: localOnly.length
+  });
+
+  return {
+    ok: failures.length === 0,
+    failedCount: failures.length,
+    failures,
+    backupRoot: mode === "backup" ? backupRoot : "",
     log,
     preview: nextPreview
   };
@@ -1330,6 +1584,10 @@ function summarizePlan(plan) {
   );
 }
 
+function getProgressModKey(mod) {
+  return String(mod.folderName || mod.id || mod.name || "").toLowerCase();
+}
+
 function reportSyncProgress(onProgress, progress) {
   const total = Math.max(Number(progress.total || 0), 0);
   const current = Math.min(Math.max(Number(progress.current || 0), 0), total || 0);
@@ -1356,6 +1614,7 @@ function reportSyncProgress(onProgress, progress) {
     phase: progress.phase,
     message: progress.message,
     modName: progress.modName || "",
+    modKey: progress.modKey || "",
     current,
     total,
     percent: Math.min(Math.max(percent, 0), 100),
