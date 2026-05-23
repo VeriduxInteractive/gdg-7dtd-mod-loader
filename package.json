@@ -44,14 +44,27 @@
       "output": "release"
     },
     "files": [
+      "build/icon.ico",
+      "build/icon.png",
       "dist/**/*",
       "electron/**/*",
       "server-directory/**/*",
       "package.json"
     ],
     "asar": true,
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
     "win": {
       "signAndEditExecutable": false,
+      "icon": "build/icon.ico",
       "target": [
         "dir"
       ]

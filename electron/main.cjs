@@ -49,6 +49,7 @@ function createWindow() {
     minHeight: 680,
     backgroundColor: "#f6f7f9",
     title: "GDG Mod Loader",
+    icon: getAppIconPath(),
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       nodeIntegration: false,
@@ -61,6 +62,11 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
   }
+}
+
+function getAppIconPath() {
+  const iconFile = process.platform === "win32" ? "icon.ico" : "icon.png";
+  return app.isPackaged ? path.join(process.resourcesPath, iconFile) : path.join(__dirname, "..", "build", iconFile);
 }
 
 app.whenReady().then(() => {
