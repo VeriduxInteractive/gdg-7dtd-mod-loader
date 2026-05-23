@@ -600,7 +600,7 @@ function App() {
       if (!result.ok) {
         throw new Error(result.error || "Steam could not be opened.");
       }
-      setMessage("Steam opened");
+      setMessage("Steam opened. Update 7 Days to Die, then check server mods again.");
     });
   }
 
@@ -618,8 +618,43 @@ function App() {
   const selectedHealth = selectedServer ? serverHealth[selectedServer.id] : null;
   const selectedServerName = selectedServer?.name || preview?.manifest.server.name || "Golden Days Gaming";
   const serverEacEnabled = typeof preview?.manifest.server.eacEnabled === "boolean" ? preview.manifest.server.eacEnabled : selectedHealth?.eacEnabled ?? null;
-  const requiredGameVersion = preview?.gameCompatibility.requiredGameVersion || selectedHealth?.gameVersion || "";
   const requiredSteamBuildId = preview?.gameCompatibility.requiredSteamBuildId || selectedHealth?.steamBuildId || "";
+  const gameVersionMap = preview?.gameCompatibility.gameVersionMap || preview?.manifest.server.gameVersionMap || selectedHealth?.gameVersionMap || {};
+  const mappedRequiredGameVersion = getGameVersionForBuild(requiredSteamBuildId, gameVersionMap);
+  const requiredGameVersion = preview?.gameCompatibility.requiredGameVersion || selectedHealth?.gameVersion || mappedRequiredGameVersion;
+  const mappedLocalGameVersion = getGameVersionForBuild(gameVersion?.steamBuildId || "", gameVersionMap);
+  const serverVersionLabel = requiredGameVersion || (requiredSteamBuildId ? `Build ${requiredSteamBuildId}` : "Not set");
+  const localBuildMatchesServer = Boolean(requiredSteamBuildId && gameVersion?.steamBuildId === requiredSteamBuildId);
+  const localGameVersionLabel =
+    mappedLocalGameVersion
+      ? mappedLocalGameVersion
+      : requiredGameVersion && localBuildMatchesServer
+        ? requiredGameVersion
+        : gameVersion?.steamBuildId
+          ? `Build ${gameVersion.steamBuildId}`
+          : "Unknown";
+  const localGameVersionWithBuild =
+    mappedLocalGameVersion && gameVersion?.steamBuildId
+      ? `${mappedLocalGameVersion} (Steam build ${gameVersion.steamBuildId})`
+      : gameVersion?.steamBuildId
+        ? `Steam build ${gameVersion.steamBuildId}`
+        : "";
+  const serverGameVersionWithBuild =
+    requiredGameVersion && requiredSteamBuildId
+      ? `${requiredGameVersion} (Steam build ${requiredSteamBuildId})`
+      : requiredGameVersion
+        ? requiredGameVersion
+        : requiredSteamBuildId
+          ? `Steam build ${requiredSteamBuildId}`
+          : "";
+  const localVersionStatus =
+    localBuildMatchesServer && requiredGameVersion
+      ? `This PC matches ${serverGameVersionWithBuild}.`
+      : mappedLocalGameVersion && gameVersion?.steamBuildId
+        ? `This PC has ${localGameVersionWithBuild}.`
+        : gameVersion?.steamBuildId
+          ? `This PC has Steam build ${gameVersion.steamBuildId}.`
+          : "Steam build not detected for this folder.";
   const gameCompatibility = preview?.gameCompatibility || null;
   const gameVersionMismatch = Boolean(gameCompatibility?.checked && !gameCompatibility.ok);
   const gameVersionKnown = Boolean(gameVersion?.steamBuildId);
@@ -712,7 +747,9 @@ function App() {
 
         <section className="health-panel" aria-label="Loader status">
           <StatusRow icon={<Gamepad2 size={17} />} label="Game" value={config.gamePath ? "Selected" : detected?.found ? "Choose" : "Missing"} />
+          <StatusRow icon={<RefreshCw size={17} />} label="Game version" value={localGameVersionLabel} />
           <StatusRow icon={<UploadCloud size={17} />} label="Server sync" value={selectedHealth?.ok ? "Online" : config.manifestInput ? "Selected" : "Missing"} />
+          <StatusRow icon={<RefreshCw size={17} />} label="Server version" value={serverVersionLabel} />
           <StatusRow icon={serverEacEnabled ? <ShieldCheck size={17} /> : <ShieldOff size={17} />} label="Server EAC" value={serverEacLabel} />
           <StatusRow icon={config.launchWithEac ? <ShieldCheck size={17} /> : <ShieldOff size={17} />} label="Launch EAC" value={config.launchWithEac ? "On" : "Off"} />
           <StatusRow icon={<ListChecks size={17} />} label="Action" value={nextAction} />
@@ -928,17 +965,24 @@ function App() {
                                   ? `Server expects Steam build ${requiredSteamBuildId}.`
                                   : "Server has not published a required game version yet."}
                           </small>
-                          <small>
-                            {gameVersionKnown
-                              ? `This PC has Steam build ${gameVersion?.steamBuildId}.`
-                              : "Steam build not detected for this folder."}
-                          </small>
+                          <small>{localVersionStatus}</small>
                         </span>
                         {gameVersionMismatch && (
                           <button className="secondary slim" type="button" onClick={openSteamUpdate} disabled={working}>
                             <RefreshCw size={16} />
-                            Open Steam Update
+                            Open Steam
                           </button>
+                        )}
+                        {gameVersionMismatch && (
+                          <div className="steam-update-help">
+                            <strong>Steam controls game updates.</strong>
+                            <ol>
+                              <li>Open Steam and select 7 Days to Die.</li>
+                              <li>Go to Properties, then Betas.</li>
+                              <li>Choose the public/current branch or the server version shown above.</li>
+                              <li>Wait for Steam to finish updating, then come back and click Check Server Mods.</li>
+                            </ol>
+                          </div>
                         )}
                       </div>
                     )}
@@ -1076,7 +1120,6 @@ function App() {
               </div>
               <div className="storage-grid">
                 <StorageStat icon={<Database size={16} />} label="Server mods" value={serverSize.known ? formatBytes(serverSize.bytes) : "Unknown"} tone="gold" />
-                <StorageStat icon={<RefreshCw size={16} />} label="Game version" value={requiredGameVersion || requiredSteamBuildId || "Not set"} tone={gameVersionMismatch ? "red" : requiredGameVersion || requiredSteamBuildId ? "green" : "muted"} />
                 <StorageStat icon={serverEacEnabled ? <ShieldCheck size={16} /> : <ShieldOff size={16} />} label="Server EAC" value={serverEacLabel} tone={serverEacEnabled === null ? "muted" : serverEacEnabled ? "green" : "amber"} />
                 <StorageStat icon={<HardDrive size={16} />} label="Free space" value={diskSpace ? formatBytes(diskSpace.freeBytes) : "Unknown"} tone={freeSpaceTone} />
               </div>
@@ -1220,6 +1263,7 @@ function App() {
               <SettingItem label="Detected install" value={detected?.found ? detected.path : "Not found"} />
               <SettingItem label="Install type" value={installProfile.label} />
               <SettingItem label="Saved game folder" value={config.gamePath || "Not set"} />
+              <SettingItem label="Local game version" value={localGameVersionLabel} />
               <SettingItem label="Local Steam build" value={gameVersion?.steamBuildId || "Unknown"} />
               <SettingItem label="Server game version" value={requiredGameVersion || "Not published"} />
               <SettingItem label="Server Steam build" value={requiredSteamBuildId || "Not published"} />
@@ -1247,6 +1291,15 @@ function StatusRow({ icon, label, value }: { icon: React.ReactNode; label: strin
       <strong>{value}</strong>
     </div>
   );
+}
+
+function getGameVersionForBuild(buildId: string, versionMap: Record<string, string> = {}) {
+  const key = String(buildId || "").trim();
+  if (!key) {
+    return "";
+  }
+
+  return String(versionMap[key] || "").trim();
 }
 
 function Metric({ label, value, tone }: { label: string; value: number; tone: string }) {

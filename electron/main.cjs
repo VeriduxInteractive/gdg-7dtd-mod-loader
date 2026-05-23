@@ -1300,13 +1300,15 @@ async function applySync(payload, onProgress = () => {}) {
 
   const modsPath = path.join(payload.gamePath, "Mods");
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupRoot = path.join(app.getPath("userData"), "backups", timestamp);
-  const stagingRoot = path.join(app.getPath("temp"), "gdg-mod-loader", timestamp);
+  const workRoot = getSyncWorkRoot(payload.gamePath);
+  const backupRoot = path.join(workRoot, "backups", timestamp);
+  const stagingRoot = path.join(workRoot, "staging", timestamp);
   const log = [];
   const failures = [];
 
   await fsp.mkdir(modsPath, { recursive: true });
   await fsp.mkdir(stagingRoot, { recursive: true });
+  log.push(`Using sync workspace: ${workRoot}`);
 
   const actionable = preview.plan.filter((item) => item.action === "install" || item.action === "update");
   const total = actionable.length;
@@ -1322,6 +1324,8 @@ async function applySync(payload, onProgress = () => {}) {
     const current = index + 1;
     const modName = item.mod.name || item.mod.id;
     const modKey = getProgressModKey(item.mod);
+    const tempPaths = [];
+
     try {
       log.push(`Preparing ${modName}.`);
       reportSyncProgress(onProgress, {
@@ -1344,6 +1348,7 @@ async function applySync(payload, onProgress = () => {}) {
           bytesTotal: download.bytesTotal
         });
       });
+      tempPaths.push(archivePath);
       reportSyncProgress(onProgress, {
         phase: "extracting",
         message: `Unpacking ${modName}.`,
@@ -1353,6 +1358,7 @@ async function applySync(payload, onProgress = () => {}) {
         total
       });
       const sourceFolder = await extractModArchive(archivePath, stagingRoot, item.mod);
+      tempPaths.push(path.dirname(sourceFolder));
       const folderName = sanitizeFolderName(item.mod.folderName || path.basename(sourceFolder));
       const targetFolder = path.join(modsPath, folderName);
 
@@ -1406,6 +1412,8 @@ async function applySync(payload, onProgress = () => {}) {
         modId: item.mod.id,
         source: item.mod.source?.url || ""
       });
+    } finally {
+      await cleanupSyncTempPaths(tempPaths);
     }
   }
 
@@ -1451,6 +1459,16 @@ async function applySync(payload, onProgress = () => {}) {
   };
 }
 
+function getSyncWorkRoot(gamePath) {
+  return path.join(path.dirname(path.resolve(String(gamePath || os.homedir()))), ".gdg-mod-loader");
+}
+
+async function cleanupSyncTempPaths(tempPaths) {
+  for (const tempPath of [...new Set(tempPaths.filter(Boolean))].reverse()) {
+    await fsp.rm(tempPath, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function createFailedApplyResult(payload, error, onProgress = () => {}) {
   const message = error?.message || String(error || "Unknown sync error");
   let preview = null;
@@ -1493,7 +1511,7 @@ async function cleanLocalMods(payload, onProgress = () => {}) {
   const localOnly = preview.plan.filter((item) => item.action === "keep" && item.installed?.folderPath);
   const mode = payload.mode === "delete" ? "delete" : "backup";
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupRoot = path.join(app.getPath("userData"), "backups", timestamp, "local-only-mods");
+  const backupRoot = path.join(getSyncWorkRoot(payload.gamePath), "backups", timestamp, "local-only-mods");
   const log = [];
   const failures = [];
 
@@ -1702,6 +1720,7 @@ async function checkServerHealth(server) {
       eacEnabled: typeof manifest.server?.eacEnabled === "boolean" ? manifest.server.eacEnabled : null,
       gameVersion: manifest.server?.gameVersion || "",
       steamBuildId: manifest.server?.steamBuildId || "",
+      gameVersionMap: normalizeGameVersionMap(manifest.server?.gameVersionMap),
       ...getManifestSizeSummary(manifest)
     };
   } catch (error) {
@@ -1788,8 +1807,10 @@ function parseSteamAppManifest(text) {
 }
 
 function compareGameCompatibility(manifest, localVersion) {
-  const requiredGameVersion = String(manifest.server?.gameVersion || "").trim();
+  const gameVersionMap = normalizeGameVersionMap(manifest.server?.gameVersionMap);
   const requiredSteamBuildId = String(manifest.server?.steamBuildId || "").trim();
+  const requiredGameVersion = String(manifest.server?.gameVersion || gameVersionMap[requiredSteamBuildId] || "").trim();
+  const requiredLabel = formatGameVersionLabel(requiredSteamBuildId, requiredGameVersion, gameVersionMap);
 
   if (!requiredGameVersion && !requiredSteamBuildId) {
     return {
@@ -1798,7 +1819,8 @@ function compareGameCompatibility(manifest, localVersion) {
       reason: "Server has not published a required game version yet.",
       local: localVersion,
       requiredGameVersion,
-      requiredSteamBuildId
+      requiredSteamBuildId,
+      gameVersionMap
     };
   }
 
@@ -1809,7 +1831,8 @@ function compareGameCompatibility(manifest, localVersion) {
       reason: `Server expects ${requiredGameVersion}, but no Steam build id was published for automatic comparison.`,
       local: localVersion,
       requiredGameVersion,
-      requiredSteamBuildId
+      requiredSteamBuildId,
+      gameVersionMap
     };
   }
 
@@ -1821,18 +1844,21 @@ function compareGameCompatibility(manifest, localVersion) {
         reason: "Steam build could not be detected for this game folder.",
         local: localVersion,
         requiredGameVersion,
-        requiredSteamBuildId
+        requiredSteamBuildId,
+        gameVersionMap
       };
     }
 
     if (localVersion.steamBuildId !== requiredSteamBuildId) {
+      const localLabel = formatGameVersionLabel(localVersion.steamBuildId, gameVersionMap[localVersion.steamBuildId], gameVersionMap);
       return {
         ok: false,
         checked: true,
-        reason: `Steam build ${localVersion.steamBuildId} does not match server build ${requiredSteamBuildId}.`,
+        reason: `This folder is ${localLabel}, but the server requires ${requiredLabel}.`,
         local: localVersion,
         requiredGameVersion,
-        requiredSteamBuildId
+        requiredSteamBuildId,
+        gameVersionMap
       };
     }
   }
@@ -1843,8 +1869,41 @@ function compareGameCompatibility(manifest, localVersion) {
     reason: requiredGameVersion ? `Game version matches ${requiredGameVersion}.` : "Steam build matches the server.",
     local: localVersion,
     requiredGameVersion,
-    requiredSteamBuildId
+    requiredSteamBuildId,
+    gameVersionMap
   };
+}
+
+function normalizeGameVersionMap(input) {
+  const map = {};
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return map;
+  }
+
+  for (const [buildId, label] of Object.entries(input)) {
+    const key = String(buildId || "").trim();
+    const value = String(label || "").trim();
+    if (key && value) {
+      map[key] = value;
+    }
+  }
+
+  return map;
+}
+
+function formatGameVersionLabel(buildId, version, gameVersionMap = {}) {
+  const normalizedBuild = String(buildId || "").trim();
+  const label = String(version || gameVersionMap[normalizedBuild] || "").trim();
+  if (label && normalizedBuild) {
+    return `${label} (Steam build ${normalizedBuild})`;
+  }
+  if (label) {
+    return label;
+  }
+  if (normalizedBuild) {
+    return `Steam build ${normalizedBuild}`;
+  }
+  return "an unknown game version";
 }
 
 async function resolveExistingPath(inputPath) {

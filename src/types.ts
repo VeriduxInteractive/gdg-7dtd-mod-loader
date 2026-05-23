@@ -65,6 +65,7 @@ export type ServerManifest = {
     eacEnabled?: boolean | null;
     gameVersion?: string;
     steamBuildId?: string;
+    gameVersionMap?: Record<string, string>;
   };
   generatedAt?: string;
   mods: ManifestMod[];
@@ -87,6 +88,7 @@ export type GameCompatibility = {
   local: GameVersionInfo;
   requiredGameVersion?: string;
   requiredSteamBuildId?: string;
+  gameVersionMap?: Record<string, string>;
 };
 
 export type SyncAction = "ready" | "install" | "update" | "blocked" | "keep";
@@ -192,6 +194,7 @@ export type ServerHealth = {
   eacEnabled: boolean | null;
   gameVersion?: string;
   steamBuildId?: string;
+  gameVersionMap?: Record<string, string>;
   error?: string;
 };
 

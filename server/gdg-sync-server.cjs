@@ -17,6 +17,28 @@ const {
 } = require("../shared/gdg-sync-core.cjs");
 
 const DEFAULT_EXCLUDES = ["GDGSyncClient", "GDGSyncServer"];
+const DEFAULT_GAME_VERSION_MAP = {
+  "22422060": "2.6",
+  "21600838": "2.5",
+  "20371853": "2.4",
+  "19878666": "2.3",
+  "19002040": "2.0",
+  "17989995": "1.4",
+  "12966449": "Alpha 21.2",
+  "10740005": "Alpha 20.7",
+  "7108523": "Alpha 19.6",
+  "4714807": "Alpha 18.4",
+  "3851784": "Alpha 17.4",
+  "2222519": "Alpha 16.4",
+  "1642896": "Alpha 15.2",
+  "1192732": "Alpha 14.7",
+  "963560": "Alpha 13.8",
+  "745244": "Alpha 12.5",
+  "659274": "Alpha 11.6",
+  "480999": "Alpha 10.4",
+  "386759": "Alpha 9.3",
+  "333572": "Alpha 8.8"
+};
 
 if (require.main === module) {
   main().catch((error) => {
@@ -84,6 +106,9 @@ async function publish(args) {
   const externalClientMods = await loadExternalClientMods(policy.extraClientMods);
   const externalClientPackages = await resolveExternalClientPackages(policy.extraClientPackages);
   const serverConfig = await readSevenDaysServerConfig(gameRoot);
+  const gameVersionMap = await loadGameVersionMap(args);
+  const steamBuildId = String(args.steamBuildId || args["steam-build-id"] || "").trim();
+  const gameVersion = String(args.gameVersion || args["game-version"] || gameVersionMap[steamBuildId] || "").trim();
 
   for (const localMod of publishableMods) {
     mods.push(await packageLocalMod(localMod, { packagesDir, baseUrl, usedArchiveNames }));
@@ -105,8 +130,9 @@ async function publish(args) {
       port: Number(args.gamePort || args["game-port"] || 26900),
       syncUrl: `${baseUrl}/gdg-sync/manifest.json`,
       eacEnabled: resolveOptionalBoolean(args.eac !== undefined ? args.eac : args["eac-enabled"], serverConfig.eacEnabled),
-      gameVersion: String(args.gameVersion || args["game-version"] || "").trim(),
-      steamBuildId: String(args.steamBuildId || args["steam-build-id"] || "").trim()
+      gameVersion,
+      steamBuildId,
+      gameVersionMap
     },
     mods
   });
@@ -143,6 +169,7 @@ async function publish(args) {
     eacEnabled: manifest.server.eacEnabled,
     gameVersion: manifest.server.gameVersion,
     steamBuildId: manifest.server.steamBuildId,
+    knownGameVersionCount: Object.keys(manifest.server.gameVersionMap || {}).length,
     policy,
     baseUrl
   };
@@ -231,6 +258,41 @@ async function resolveExternalClientPackages(packages) {
   }
 
   return resolved;
+}
+
+async function loadGameVersionMap(args) {
+  const input = args.gameVersionMap || args["game-version-map"];
+  if (!input) {
+    return { ...DEFAULT_GAME_VERSION_MAP };
+  }
+
+  if (String(input).trim().toLowerCase() === "none") {
+    return {};
+  }
+
+  const trimmed = String(input).trim();
+  const parsed = trimmed.startsWith("{")
+    ? JSON.parse(trimmed)
+    : JSON.parse(await fsp.readFile(path.resolve(trimmed), "utf8"));
+
+  return normalizeGameVersionMap(parsed);
+}
+
+function normalizeGameVersionMap(input) {
+  const map = {};
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return map;
+  }
+
+  for (const [buildId, label] of Object.entries(input)) {
+    const key = String(buildId || "").trim();
+    const value = String(label || "").trim();
+    if (key && value) {
+      map[key] = value;
+    }
+  }
+
+  return map;
 }
 
 async function resolveGitHubReleasePackage(packageConfig) {
@@ -687,6 +749,7 @@ function printPublishResult(result) {
   console.log(`Server EAC: ${typeof result.eacEnabled === "boolean" ? (result.eacEnabled ? "on" : "off") : "unknown"}`);
   console.log(`Required game version: ${result.gameVersion || "not set"}`);
   console.log(`Required Steam build: ${result.steamBuildId || "not set"}`);
+  console.log(`Known game versions: ${result.knownGameVersionCount}`);
   console.log(`Skipped ${result.skippedCount} server-only/private mods`);
   console.log(`Extra client-only mods: ${result.externalClientCount}`);
   console.log(`Extra client-only packages: ${result.externalPackageCount}`);
@@ -734,6 +797,7 @@ Common options:
   --game-port <port>       7DTD game port, default 26900
   --game-version <version> Human-readable required game version shown to players, e.g. 2.6 Stable
   --steam-build-id <id>    Required Steam client build id from appmanifest_251570.acf
+  --game-version-map <json|path|none> Build id to friendly version map, defaults to known SteamDB 7DTD branches
   --port <port>            HTTP sync endpoint port, default 8787
   --host <host>            HTTP bind host, default 0.0.0.0
   --exclude <csv>          Mod folders not published, default GDGSyncClient,GDGSyncServer

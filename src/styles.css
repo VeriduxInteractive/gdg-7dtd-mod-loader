@@ -637,19 +637,22 @@ button:disabled {
 
 .step-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px;
+  min-width: 0;
 }
 
 .step-actions .secondary,
 .step-actions .primary {
-  min-width: 170px;
-  height: 46px;
+  min-width: 0;
+  height: 42px;
+  padding: 0 13px;
   border-width: 1px;
+  white-space: nowrap;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 12px 26px rgba(0, 0, 0, 0.22);
+    0 10px 22px rgba(0, 0, 0, 0.2);
 }
 
 .flow-steps {
@@ -786,27 +789,58 @@ button:disabled {
   background: rgba(240, 180, 75, 0.1);
 }
 
-.version-guard span {
+.version-guard > span {
   display: grid;
   gap: 2px;
   min-width: 0;
 }
 
-.version-guard strong,
-.version-guard small {
+.version-guard > span strong,
+.version-guard > span small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.version-guard strong {
+.version-guard > span strong {
   color: #fff7df;
 }
 
-.version-guard small {
+.version-guard > span small {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.steam-update-help {
+  grid-column: 2 / -1;
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+  padding: 12px;
+  border: 1px solid rgba(239, 188, 76, 0.22);
+  border-radius: 8px;
+  color: #f6e7bd;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.steam-update-help strong {
+  color: #fff7df;
+  font-size: 13px;
+}
+
+.steam-update-help ol {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.steam-update-help li {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.35;
 }
 
 .install-summary,
@@ -1803,6 +1837,10 @@ input:focus {
   .sync-progress-details {
     grid-template-columns: 1fr;
     gap: 6px;
+  }
+
+  .step-actions {
+    flex-wrap: wrap;
   }
 }
 
