@@ -71,6 +71,7 @@ async function main() {
   if (command === "publish-and-serve") {
     const result = await publish(args);
     printPublishResult(result);
+    void startAutoRepublish(args);
     await serve({ ...args, manifestPath: result.manifestPath });
     return;
   }
@@ -173,6 +174,105 @@ async function publish(args) {
     policy,
     baseUrl
   };
+}
+
+async function startAutoRepublish(args) {
+  if (!isAutoRepublishEnabled(args)) {
+    return;
+  }
+
+  const intervalSeconds = Math.max(15, Number(args.watchInterval || args["watch-interval"] || 120));
+  let lastSignature = await getPublishInputSignature(args).catch((error) => {
+    console.warn(`Auto-republish could not read initial signature: ${error.message}`);
+    return "";
+  });
+  let publishing = false;
+
+  console.log(`Auto-republish enabled; checking for server mod changes every ${intervalSeconds}s.`);
+
+  setInterval(async () => {
+    if (publishing) {
+      return;
+    }
+
+    publishing = true;
+    try {
+      const nextSignature = await getPublishInputSignature(args);
+      if (nextSignature && nextSignature !== lastSignature) {
+        console.log(`[${new Date().toISOString()}] Server files changed; rebuilding GDG sync manifest.`);
+        const result = await publish(args);
+        printPublishResult(result);
+        lastSignature = await getPublishInputSignature(args);
+      }
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] Auto-republish failed: ${error.message}`);
+    } finally {
+      publishing = false;
+    }
+  }, intervalSeconds * 1000);
+}
+
+function isAutoRepublishEnabled(args) {
+  return Boolean(
+    args.watch ||
+    args["watch"] ||
+    args.autoRepublish ||
+    args["auto-republish"]
+  );
+}
+
+async function getPublishInputSignature(args) {
+  const gameRoot = resolveRequiredPath(args.gameRoot || args["game-root"], "Missing --game-root");
+  const modsPath = path.resolve(args.modsPath || args["mods-path"] || path.join(gameRoot, "Mods"));
+  const policyPath = args.policy || args["policy"];
+  const configCandidates = [
+    path.join(gameRoot, "serverconfig.xml"),
+    path.join(gameRoot, "serverconfigfull.xml")
+  ];
+  const records = [];
+
+  await collectFileSignatureRecords(modsPath, modsPath, records);
+
+  for (const configPath of configCandidates) {
+    if (await exists(configPath)) {
+      await addFileSignatureRecord(path.dirname(configPath), configPath, records);
+    }
+  }
+
+  if (policyPath) {
+    const resolvedPolicyPath = path.resolve(policyPath);
+    if (await exists(resolvedPolicyPath)) {
+      await addFileSignatureRecord(path.dirname(resolvedPolicyPath), resolvedPolicyPath, records);
+    }
+  }
+
+  records.sort();
+  return hashText(records.join("\n"));
+}
+
+async function collectFileSignatureRecords(root, current, records) {
+  if (!(await exists(current))) {
+    return;
+  }
+
+  const entries = await fsp.readdir(current, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      await collectFileSignatureRecords(root, fullPath, records);
+    } else if (entry.isFile()) {
+      await addFileSignatureRecord(root, fullPath, records);
+    }
+  }
+}
+
+async function addFileSignatureRecord(root, filePath, records) {
+  const stats = await fsp.stat(filePath);
+  records.push(`${path.relative(root, filePath).replace(/\\/g, "/")}|${stats.size}|${Math.trunc(stats.mtimeMs)}`);
+}
+
+function hashText(value) {
+  return require("node:crypto").createHash("sha256").update(value).digest("hex");
 }
 
 async function packageLocalMod(localMod, context) {
@@ -808,6 +908,8 @@ Common options:
   --private-prefixes <csv> Server-only folder/name prefixes never published
   --extra-client-mods <paths> Semicolon- or comma-separated client-only mod folders to publish
   --extra-client-packages <json> JSON array of already-hosted client zip package metadata
+  --watch                 Rebuild published manifest/packages when server files change
+  --watch-interval <sec>  Auto-republish check interval, default 120
 
 Examples:
   npm run server:publish -- --game-root "D:\\7dtd-server" --base-url "https://mods.goldendaysgaming.com"

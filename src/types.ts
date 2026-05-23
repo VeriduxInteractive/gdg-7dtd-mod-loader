@@ -218,12 +218,14 @@ export type GdgApi = {
   onCloneProgress: (callback: (progress: SyncProgress) => void) => () => void;
   scanMods: (gamePath: string) => Promise<ScanResult>;
   previewSync: (payload: { gamePath: string; manifestInput: string }) => Promise<SyncPreview>;
-  applySync: (payload: { gamePath: string; manifestInput: string }) => Promise<ApplyResult>;
+  applySync: (payload: { gamePath: string; manifestInput: string; repair?: boolean }) => Promise<ApplyResult>;
   cleanLocalMods: (payload: { gamePath: string; manifestInput: string; mode?: "backup" | "delete" }) => Promise<ApplyResult>;
   onSyncProgress: (callback: (progress: SyncProgress) => void) => () => void;
+  onSupportBundleProgress: (callback: (progress: SyncProgress) => void) => () => void;
   onGameCopyDeleted: (callback: (payload: { config: LoaderConfig; detected: DetectedGame; deletedPath: string }) => void) => () => void;
   launchGame: (payload: { gamePath: string; eacEnabled: boolean }) => Promise<LaunchGameResult>;
   openSteamUpdate: () => Promise<{ ok: boolean; error?: string }>;
   openDiagnosticLog: () => Promise<{ ok: boolean; error?: string; path: string }>;
+  createSupportBundle: () => Promise<{ ok: boolean; error?: string; path: string; folderPath: string; fileName: string }>;
   openPath: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
 };

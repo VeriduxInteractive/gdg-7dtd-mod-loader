@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Archive,
   ChevronDown,
   CheckCircle2,
   Copy,
@@ -25,7 +26,7 @@ import {
   Wrench,
   XCircle
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ApplyResult,
   CloneGameResult,
@@ -64,6 +65,7 @@ function App() {
   const [scan, setScan] = useState<ScanResult | null>(null);
   const [preview, setPreview] = useState<SyncPreview | null>(null);
   const [applyResult, setApplyResult] = useState<ApplyResult | null>(null);
+  const [supportBundle, setSupportBundle] = useState<{ path: string; folderPath: string; fileName: string } | null>(null);
   const [serverDirectory, setServerDirectory] = useState<ServerDirectory | null>(null);
   const [serverHealth, setServerHealth] = useState<Record<string, ServerHealth>>({});
   const [diskSpace, setDiskSpace] = useState<DiskSpace | null>(null);
@@ -78,6 +80,8 @@ function App() {
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [livePlanStatuses, setLivePlanStatuses] = useState<Record<string, LivePlanStatus>>({});
   const [openStep, setOpenStep] = useState<GuidedStepId | "">("setup");
+  const progressPanelRef = useRef<HTMLElement | null>(null);
+  const lastAutoScrolledProgressKey = useRef("");
 
   useEffect(() => {
     void initialize();
@@ -89,6 +93,9 @@ function App() {
       updateLivePlanStatus(progress);
     });
     const removeCloneProgress = window.gdg.onCloneProgress((progress) => {
+      setSyncProgress(progress);
+    });
+    const removeSupportBundleProgress = window.gdg.onSupportBundleProgress((progress) => {
       setSyncProgress(progress);
     });
     const removeGameCopyDeleted = window.gdg.onGameCopyDeleted((payload) => {
@@ -104,6 +111,7 @@ function App() {
     return () => {
       removeSyncProgress();
       removeCloneProgress();
+      removeSupportBundleProgress();
       removeGameCopyDeleted();
     };
   }, []);
@@ -135,6 +143,24 @@ function App() {
       canceled = true;
     };
   }, [config.gamePath]);
+
+  useEffect(() => {
+    if (!syncProgress) {
+      lastAutoScrolledProgressKey.current = "";
+      return;
+    }
+
+    const progressKey = `${getProgressTitle(syncProgress)}:${syncProgress.total}`;
+    const isStarting = syncProgress.current <= 1 || syncProgress.percent <= 5;
+    if (!isStarting || lastAutoScrolledProgressKey.current === progressKey) {
+      return;
+    }
+
+    lastAutoScrolledProgressKey.current = progressKey;
+    window.setTimeout(() => {
+      progressPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 50);
+  }, [syncProgress]);
 
   useEffect(() => {
     let canceled = false;
@@ -243,14 +269,14 @@ function App() {
     });
   }
 
-  async function runTask(label: string, task: () => Promise<void>) {
+  async function runTask(label: string, task: () => Promise<void | string>) {
     setBusy(label);
     setError("");
     setMessage(label);
 
     try {
-      await task();
-      setMessage("Ready");
+      const successMessage = await task();
+      setMessage(typeof successMessage === "string" ? successMessage : "Ready");
     } catch (taskError) {
       const nextError = taskError instanceof Error ? taskError.message : String(taskError);
       setError(nextError);
@@ -312,13 +338,17 @@ function App() {
         return [server.id, health] as const;
       })
     );
-    setServerHealth(Object.fromEntries(healthEntries));
-    return visibleDirectory;
+    const nextHealth = Object.fromEntries(healthEntries);
+    setServerHealth(nextHealth);
+    return Object.assign(visibleDirectory, { healthById: nextHealth });
   }
 
   async function refreshServerDirectory() {
     await runTask("Checking servers", async () => {
-      await loadDirectory(config.serverDirectoryInput);
+      const directory = await loadDirectory(config.serverDirectoryInput);
+      const healthById = (directory as ServerDirectory & { healthById?: Record<string, ServerHealth> }).healthById || {};
+      const onlineCount = directory.servers.filter((server) => healthById[server.id]?.ok).length;
+      return `${onlineCount} of ${directory.servers.length} GDG server${directory.servers.length === 1 ? "" : "s"} online`;
     });
   }
 
@@ -479,6 +509,12 @@ function App() {
   }
 
   async function applySync() {
+    if (syncSpaceBlocked && diskSpace) {
+      setError(`Not enough free space. GDG needs about ${formatBytes(syncSpaceRequirement.bytes)} free on this drive, but only ${formatBytes(diskSpace.freeBytes)} is available.`);
+      setOpenStep("install");
+      return;
+    }
+
     setLivePlanStatuses({});
     setSyncProgress({
       phase: "preparing",
@@ -501,6 +537,40 @@ function App() {
       setActiveTab("sync");
       if (!result.ok) {
         setError(`${result.failedCount || 1} mod install${result.failedCount === 1 ? "" : "s"} failed. Check the sync log below.`);
+      }
+    });
+  }
+
+  async function repairSync() {
+    if (repairSpaceBlocked && diskSpace) {
+      setError(`Not enough free space for repair. GDG needs about ${formatBytes(repairSpaceRequirement.bytes)} free on this drive, but only ${formatBytes(diskSpace.freeBytes)} is available.`);
+      setOpenStep("install");
+      return;
+    }
+
+    setLivePlanStatuses({});
+    setSyncProgress({
+      phase: "preparing",
+      message: "Starting repair sync.",
+      current: 0,
+      total: Math.max(repairableMods, 1),
+      percent: 0
+    });
+
+    await runTask("Repairing mods", async () => {
+      const result = await window.gdg.applySync({
+        gamePath: config.gamePath,
+        manifestInput: config.manifestInput,
+        repair: true
+      });
+      setApplyResult(result);
+      if (result.preview) {
+        setPreview(result.preview);
+        setScan(result.preview.local);
+      }
+      setActiveTab("sync");
+      if (!result.ok) {
+        setError(`${result.failedCount || 1} mod repair${result.failedCount === 1 ? "" : "s"} failed. Check the sync log below.`);
       }
     });
   }
@@ -614,9 +684,34 @@ function App() {
     });
   }
 
+  async function createSupportBundle() {
+    setSyncProgress({
+      phase: "preparing",
+      message: "Preparing support bundle.",
+      current: 0,
+      total: 7,
+      percent: 0
+    });
+
+    await runTask("Creating support bundle", async () => {
+      const result = await window.gdg.createSupportBundle();
+      if (!result.ok) {
+        throw new Error(result.error || "Support bundle could not be created.");
+      }
+
+      setSupportBundle({
+        path: result.path,
+        folderPath: result.folderPath,
+        fileName: result.fileName
+      });
+      setMessage("Support bundle created");
+    });
+  }
+
   const working = Boolean(busy);
   const selectedHealth = selectedServer ? serverHealth[selectedServer.id] : null;
   const selectedServerName = selectedServer?.name || preview?.manifest.server.name || "Golden Days Gaming";
+  const showingSupportProgress = Boolean(syncProgress && isSupportBundleProgress(syncProgress));
   const serverEacEnabled = typeof preview?.manifest.server.eacEnabled === "boolean" ? preview.manifest.server.eacEnabled : selectedHealth?.eacEnabled ?? null;
   const requiredSteamBuildId = preview?.gameCompatibility.requiredSteamBuildId || selectedHealth?.steamBuildId || "";
   const gameVersionMap = preview?.gameCompatibility.gameVersionMap || preview?.manifest.server.gameVersionMap || selectedHealth?.gameVersionMap || {};
@@ -659,7 +754,13 @@ function App() {
   const gameVersionMismatch = Boolean(gameCompatibility?.checked && !gameCompatibility.ok);
   const gameVersionKnown = Boolean(gameVersion?.steamBuildId);
   const serverSize = getServerSize(preview, selectedHealth);
-  const freeSpaceTone = getFreeSpaceTone(diskSpace?.freeBytes, serverSize.bytes, serverSize.known);
+  const modsToInstall = preview ? (preview.summary.install || 0) + (preview.summary.update || 0) : 0;
+  const repairableMods = preview ? preview.plan.filter((item) => ["ready", "install", "update"].includes(item.action) && Boolean(item.mod.source)).length : 0;
+  const syncSpaceRequirement = getSyncSpaceRequirement(preview, serverSize);
+  const repairSpaceRequirement = getSyncSpaceRequirement(preview, serverSize, { repairMode: true });
+  const syncSpaceBlocked = Boolean(preview && modsToInstall > 0 && diskSpace && syncSpaceRequirement.known && diskSpace.freeBytes < syncSpaceRequirement.bytes);
+  const repairSpaceBlocked = Boolean(preview && repairableMods > 0 && diskSpace && repairSpaceRequirement.known && diskSpace.freeBytes < repairSpaceRequirement.bytes);
+  const freeSpaceTone = getFreeSpaceTone(diskSpace?.freeBytes, syncSpaceRequirement.bytes || serverSize.bytes, syncSpaceRequirement.known || serverSize.known);
   const currentScan = scan && normalizePath(scan.gamePath) === normalizePath(config.gamePath) ? scan : null;
   const scanMatchesGame = Boolean(currentScan);
   const dllMods = currentScan ? currentScan.mods.filter((mod) => mod.hasDll) : [];
@@ -676,8 +777,9 @@ function App() {
       ? `${dllMods.length} DLL mod${dllMods.length === 1 ? "" : "s"} detected. EAC off recommended.`
       : "No DLL mods detected in the selected install.";
   const serverEacLabel = typeof serverEacEnabled === "boolean" ? (serverEacEnabled ? "On" : "Off") : "Unknown";
-  const modsToInstall = preview ? (preview.summary.install || 0) + (preview.summary.update || 0) : 0;
   const localOnlyMods = preview?.summary.keep || 0;
+  const visibleServers = serverDirectory?.servers || [];
+  const onlineServerCount = visibleServers.filter((server) => serverHealth[server.id]?.ok).length;
   const setupStepState = config.gamePath ? "done" : "active";
   const checkStepState = preview ? "done" : config.gamePath && config.manifestInput ? "active" : "waiting";
   const installStepState = !preview ? "waiting" : modsToInstall > 0 ? "active" : "done";
@@ -721,12 +823,17 @@ function App() {
 
         <section className="server-list" aria-label="Server profiles">
           <div className="server-list-heading">
-            <div className="section-label">GDG Servers</div>
+            <div>
+              <div className="section-label">GDG Servers</div>
+              <small className="server-list-summary">
+                {visibleServers.length > 0 ? `${onlineServerCount} of ${visibleServers.length} online` : "Checking servers"}
+              </small>
+            </div>
             <button className="mini-icon" type="button" onClick={refreshServerDirectory} title="Refresh server status">
               <RefreshCw size={15} />
             </button>
           </div>
-          {(serverDirectory?.servers || []).map((server) => {
+          {visibleServers.map((server) => {
             const health = serverHealth[server.id];
             const active = selectedServer?.id === server.id;
 
@@ -739,6 +846,12 @@ function App() {
                   <small className={health?.ok ? "sync-online" : "sync-offline"}>
                     {health ? (health.ok ? `Sync online - ${health.modCount} mods - ${formatKnownBytes(health.installedBytes, health.installedSizeKnown)}` : "Sync offline") : "Checking sync"}
                   </small>
+                  <span className="server-badges">
+                    <em>{getServerKindLabel(server)}</em>
+                    <em>{getServerVersionLabel(health)}</em>
+                    <em>EAC {typeof health?.eacEnabled === "boolean" ? (health.eacEnabled ? "On" : "Off") : "?"}</em>
+                    <em>{health?.ok ? formatKnownBytes(health.installedBytes, health.installedSizeKnown) : "Size ?"}</em>
+                  </span>
                 </span>
               </button>
             );
@@ -795,6 +908,12 @@ function App() {
             Settings
           </button>
         </nav>
+
+        {activeTab !== "sync" && !(activeTab === "settings" && showingSupportProgress) && syncProgress && (
+          <div className="content-grid">
+            <ProgressPanel progress={syncProgress} panelRef={progressPanelRef} />
+          </div>
+        )}
 
         {activeTab === "sync" && (
           <div className="content-grid">
@@ -1029,14 +1148,36 @@ function App() {
                 >
                   <div className="step-body">
                     <p className="step-copy">
-                      GDG will download missing packages, back up updated folders, and mark each mod ready as it finishes. Local-only mods are shown below but are not removed automatically.
+                      GDG will download missing packages, back up updated folders, and mark each mod ready as it finishes. Local-only mods are on this PC but not required by this server; they may cause crashes or mismatches.
                     </p>
                     {localOnlyMods > 0 && (
                       <div className="local-only-warning">
                         <AlertTriangle size={18} />
                         <span>
                           <strong>{localOnlyMods} local-only mod{localOnlyMods === 1 ? "" : "s"} detected</strong>
-                          <small>These are installed on this PC but are not part of the selected server package.</small>
+                          <small>These are not part of the selected server package. Move or delete them if the game crashes or behaves differently from the server.</small>
+                        </span>
+                      </div>
+                    )}
+                    {syncSpaceBlocked && diskSpace && (
+                      <div className="local-only-warning danger">
+                        <AlertTriangle size={18} />
+                        <span>
+                          <strong>Not enough free space</strong>
+                          <small>
+                            GDG needs about {formatBytes(syncSpaceRequirement.bytes)} free on the selected game drive for downloads, extraction, and backups. This drive has {formatBytes(diskSpace.freeBytes)} free.
+                          </small>
+                        </span>
+                      </div>
+                    )}
+                    {repairSpaceBlocked && diskSpace && (
+                      <div className="local-only-warning danger">
+                        <AlertTriangle size={18} />
+                        <span>
+                          <strong>Not enough free space for repair</strong>
+                          <small>
+                            Repair needs about {formatBytes(repairSpaceRequirement.bytes)} free on the selected game drive. This drive has {formatBytes(diskSpace.freeBytes)} free.
+                          </small>
                         </span>
                       </div>
                     )}
@@ -1049,9 +1190,13 @@ function App() {
                         <Trash2 size={17} />
                         Delete Local-Only
                       </button>
-                      <button className="primary" type="button" onClick={applySync} disabled={working || !preview || gameVersionMismatch || Boolean(preview.summary.blocked) || modsToInstall === 0}>
+                      <button className="secondary" type="button" onClick={repairSync} disabled={working || !preview || gameVersionMismatch || Boolean(preview.summary.blocked) || repairableMods === 0 || repairSpaceBlocked}>
+                        <Wrench size={17} />
+                        {repairSpaceBlocked ? "Need Space to Repair" : "Repair Selected Folder"}
+                      </button>
+                      <button className="primary" type="button" onClick={applySync} disabled={working || !preview || gameVersionMismatch || Boolean(preview.summary.blocked) || modsToInstall === 0 || syncSpaceBlocked}>
                         <Download size={17} />
-                        Install Missing Mods
+                        {syncSpaceBlocked ? "Need More Space" : "Install Missing Mods"}
                       </button>
                     </div>
                   </div>
@@ -1125,40 +1270,14 @@ function App() {
               </div>
             </section>
 
-            {syncProgress && (
-              <section className={`panel full sync-progress-panel ${syncProgress.phase}`}>
-                <div className="sync-progress-heading">
-                  <div>
-                    <span className="section-label">Progress</span>
-                    <h3>{getProgressTitle(syncProgress)}</h3>
-                  </div>
-                  <strong>{syncProgress.percent}%</strong>
-                </div>
-                <div className="gold-progress-track" aria-label="Sync progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={syncProgress.percent}>
-                  <div className="gold-progress-fill" style={{ width: `${syncProgress.percent}%` }} />
-                </div>
-                <div className="sync-progress-details">
-                  <span>{syncProgress.message}</span>
-                  <strong>
-                    {syncProgress.total > 0
-                      ? `${Math.min(syncProgress.current, syncProgress.total)} of ${syncProgress.total}`
-                      : "Ready"}
-                  </strong>
-                  {syncProgress.bytesTotal ? (
-                    <small>{formatBytes(syncProgress.bytesReceived || 0)} / {formatBytes(syncProgress.bytesTotal)}</small>
-                  ) : (
-                    <small>{formatSyncPhase(syncProgress.phase)}</small>
-                  )}
-                </div>
-              </section>
-            )}
+            {syncProgress && <ProgressPanel progress={syncProgress} panelRef={progressPanelRef} />}
 
             <section className="panel full">
               <div className="panel-heading">
                 <div>
                   <span className="section-label">Sync Plan</span>
                   <h3>{preview ? `${preview.plan.length} checked mods` : "Mods not checked yet"}</h3>
-                  <p className="panel-description">Green rows match the server. Local-only rows are extra mods on this PC and are not removed automatically.</p>
+                  <p className="panel-description">Green rows match the server. Local-only rows are extra mods on this PC, are not removed automatically, and may cause crashes or mismatches.</p>
                 </div>
                 <button className="secondary slim" type="button" onClick={openModsFolder} disabled={!config.gamePath}>
                   <FolderOpen size={16} />
@@ -1190,6 +1309,10 @@ function App() {
                   <button className="secondary slim" type="button" onClick={openDiagnosticLog}>
                     <FolderOpen size={16} />
                     Diagnostics
+                  </button>
+                  <button className="secondary slim" type="button" onClick={createSupportBundle} disabled={working}>
+                    <Archive size={16} />
+                    Support Bundle
                   </button>
                 </div>
                 <div className="log-list">
@@ -1256,8 +1379,28 @@ function App() {
                   <RotateCcw size={16} />
                   Change install setup
                 </button>
+                <button className="secondary slim" type="button" onClick={createSupportBundle} disabled={working}>
+                  <Archive size={16} />
+                  Support Bundle
+                </button>
               </div>
             </div>
+
+            {showingSupportProgress && syncProgress && <ProgressPanel progress={syncProgress} panelRef={progressPanelRef} />}
+
+            {supportBundle && (
+              <div className="support-result">
+                <Archive size={18} />
+                <span>
+                  <strong>Support bundle ready</strong>
+                  <small>{supportBundle.fileName}</small>
+                </span>
+                <button className="secondary slim" type="button" onClick={() => void window.gdg.openPath(supportBundle.folderPath)}>
+                  <FolderOpen size={16} />
+                  Open Folder
+                </button>
+              </div>
+            )}
 
             <div className="settings-grid">
               <SettingItem label="Detected install" value={detected?.found ? detected.path : "Not found"} />
@@ -1302,6 +1445,29 @@ function getGameVersionForBuild(buildId: string, versionMap: Record<string, stri
   return String(versionMap[key] || "").trim();
 }
 
+function getServerKindLabel(server: DirectoryServer) {
+  const id = server.id.toLowerCase();
+  const name = server.name.toLowerCase();
+  if (id.includes("pvp") || name.includes("pvp")) {
+    return "PVP";
+  }
+  if (id.includes("pve") || name.includes("pve")) {
+    return "PVE";
+  }
+  if (id.includes("test") || name.includes("test")) {
+    return "Test";
+  }
+  return "GDG";
+}
+
+function getServerVersionLabel(health?: ServerHealth) {
+  if (!health?.ok) {
+    return "Version ?";
+  }
+
+  return health.gameVersion || (health.steamBuildId ? `Build ${health.steamBuildId}` : "Version ?");
+}
+
 function Metric({ label, value, tone }: { label: string; value: number; tone: string }) {
   return (
     <div className={`metric ${tone}`}>
@@ -1318,6 +1484,36 @@ function StorageStat({ icon, label, value, tone }: { icon: React.ReactNode; labe
       <span>{label}</span>
       <strong>{value}</strong>
     </div>
+  );
+}
+
+function ProgressPanel({ progress, panelRef }: { progress: SyncProgress; panelRef: React.RefObject<HTMLElement> }) {
+  return (
+    <section ref={panelRef} className={`panel full sync-progress-panel ${progress.phase}`}>
+      <div className="sync-progress-heading">
+        <div>
+          <span className="section-label">Progress</span>
+          <h3>{getProgressTitle(progress)}</h3>
+        </div>
+        <strong>{progress.percent}%</strong>
+      </div>
+      <div className="gold-progress-track" aria-label="Progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.percent}>
+        <div className="gold-progress-fill" style={{ width: `${progress.percent}%` }} />
+      </div>
+      <div className="sync-progress-details">
+        <span>{progress.message}</span>
+        <strong>
+          {progress.total > 0
+            ? `${Math.min(progress.current, progress.total)} of ${progress.total}`
+            : "Ready"}
+        </strong>
+        {progress.bytesTotal ? (
+          <small>{formatBytes(progress.bytesReceived || 0)} / {formatBytes(progress.bytesTotal)}</small>
+        ) : (
+          <small>{getProgressDetail(progress)}</small>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -1471,7 +1667,39 @@ function getPlanKey(item: SyncPlanItem) {
   return String(item.mod.folderName || item.mod.id || item.mod.name || "").toLowerCase();
 }
 
+function isSupportBundleProgress(progress: SyncProgress) {
+  const message = progress.message.toLowerCase();
+  return (
+    message.includes("support bundle") ||
+    message.includes("diagnostic log") ||
+    message.includes("recent 7 days") ||
+    message.includes("local mods and game version") ||
+    message.includes("selected server mod list") ||
+    message.includes("writing support")
+  );
+}
+
+function getProgressDetail(progress: SyncProgress) {
+  if (!isSupportBundleProgress(progress)) {
+    return formatSyncPhase(progress.phase);
+  }
+
+  if (progress.phase === "complete") {
+    return "Ready to send";
+  }
+
+  if (progress.message.toLowerCase().includes("writing")) {
+    return "Writing zip";
+  }
+
+  return "Collecting diagnostics";
+}
+
 function getProgressTitle(progress: SyncProgress) {
+  if (isSupportBundleProgress(progress)) {
+    return progress.phase === "complete" ? "Support bundle ready" : "Creating support bundle";
+  }
+
   const message = progress.message.toLowerCase();
   if (message.includes("local-only") || message.includes("moving") || message.includes("deleting")) {
     if (progress.phase === "complete") {
@@ -1486,6 +1714,10 @@ function getProgressTitle(progress: SyncProgress) {
 
   if (progress.message.toLowerCase().includes("gdg copy")) {
     return progress.phase === "complete" ? "GDG copy ready" : "Creating GDG copy";
+  }
+
+  if (progress.message.toLowerCase().includes("repair")) {
+    return progress.phase === "complete" ? "Repair complete" : "Repairing server mods";
   }
 
   if (progress.phase === "scanning" || progress.phase === "copying" || progress.phase === "shortcut") {
@@ -1522,6 +1754,44 @@ function getServerSize(preview: SyncPreview | null, selectedHealth: ServerHealth
     bytes: 0,
     known: false
   };
+}
+
+function getSyncSpaceRequirement(preview: SyncPreview | null, fallback: { bytes: number; known: boolean }, options: { repairMode?: boolean } = {}) {
+  if (!preview) {
+    return fallback;
+  }
+
+  let bytes = 0;
+  let known = true;
+  const actionable = preview.plan.filter((item) => {
+    if (item.action === "install" || item.action === "update") {
+      return true;
+    }
+
+    return options.repairMode && item.action === "ready" && Boolean(item.mod.source);
+  });
+
+  for (const item of actionable) {
+    const archiveBytes = Number(item.mod.source?.archiveSizeBytes || 0);
+    const folderBytes = Number(item.mod.folderSizeBytes || 0);
+    const extractedBytes = folderBytes || archiveBytes;
+    const packageBytes = archiveBytes || folderBytes;
+
+    if (!packageBytes || !extractedBytes) {
+      known = false;
+    }
+
+    bytes += packageBytes + extractedBytes + extractedBytes;
+    if (item.action === "update") {
+      bytes += extractedBytes;
+    }
+  }
+
+  if (bytes > 0) {
+    bytes = Math.ceil(bytes * 1.1) + 256 * 1024 * 1024;
+  }
+
+  return { bytes, known };
 }
 
 function getFreeSpaceTone(freeBytes: number | undefined, neededBytes: number, known: boolean) {

@@ -7,6 +7,7 @@ const os = require("node:os");
 const { spawn } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
 const { once } = require("node:events");
+const AdmZip = require("adm-zip");
 const yauzl = require("yauzl");
 
 const GAME_ID = "7dtd";
@@ -217,6 +218,25 @@ function registerIpc() {
     return result ? { ok: false, error: result, path: logPath } : { ok: true, path: logPath };
   });
 
+  ipcMain.handle("gdg:create-support-bundle", async (event) => {
+    try {
+      const bundle = await createSupportBundle((progress) => {
+        sendIpcProgress(event, "gdg:support-bundle-progress", progress);
+      });
+      shell.showItemInFolder(bundle.path);
+      return { ok: true, ...bundle };
+    } catch (error) {
+      await appendDiagnosticLog("gdg:create-support-bundle", error);
+      return {
+        ok: false,
+        error: error.message || "Support bundle could not be created.",
+        path: "",
+        folderPath: "",
+        fileName: ""
+      };
+    }
+  });
+
   ipcMain.handle("gdg:open-path", async (_event, payload) => {
     if (!payload.filePath) {
       return { ok: false, error: "Missing path." };
@@ -244,6 +264,12 @@ function updateApplicationMenu() {
           label: "Open Diagnostic Log",
           click: () => {
             void openDiagnosticLog();
+          }
+        },
+        {
+          label: "Create Support Bundle...",
+          click: () => {
+            void createSupportBundleFromMenu();
           }
         },
         { type: "separator" },
@@ -321,6 +347,308 @@ async function openDiagnosticLog() {
     await fsp.writeFile(logPath, "GDG Mod Loader diagnostic log\n", "utf8");
   }
   await shell.openPath(logPath);
+}
+
+async function createSupportBundleFromMenu() {
+  try {
+    const bundle = await createSupportBundle((progress) => {
+      try {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("gdg:support-bundle-progress", progress);
+        }
+      } catch (error) {
+        void appendDiagnosticLog("menu:support-bundle-progress", error);
+      }
+    });
+    shell.showItemInFolder(bundle.path);
+
+    await dialog.showMessageBox(mainWindow, {
+      type: "info",
+      title: "Support bundle created",
+      message: "GDG support bundle created",
+      detail: `Send this zip to GDG support:\n${bundle.path}`
+    });
+  } catch (error) {
+    await appendDiagnosticLog("menu:create-support-bundle", error);
+    await dialog.showMessageBox(mainWindow, {
+      type: "error",
+      title: "Support bundle failed",
+      message: "The support bundle could not be created.",
+      detail: error.message || String(error)
+    });
+  }
+}
+
+async function createSupportBundle(onProgress = () => {}) {
+  const createdAt = new Date();
+  const timestamp = createdAt.toISOString().replace(/[:.]/g, "-");
+  const folderPath = path.join(app.getPath("userData"), "support-bundles");
+  const fileName = `GDG-Mod-Loader-support-${timestamp}.zip`;
+  const bundlePath = path.join(folderPath, fileName);
+  const zip = new AdmZip();
+  const errors = [];
+  const totalSteps = 7;
+
+  reportSupportBundleProgress(onProgress, "preparing", "Preparing support bundle.", 0, totalSteps);
+
+  await fsp.mkdir(folderPath, { recursive: true });
+
+  const config = await loadConfig().catch((error) => {
+    errors.push({ section: "config", error: error.message });
+    return getDefaultConfig();
+  });
+  reportSupportBundleProgress(onProgress, "preparing", "Loaded mod loader settings.", 1, totalSteps);
+
+  const summary = {
+    createdAt: createdAt.toISOString(),
+    app: {
+      name: app.getName(),
+      version: app.getVersion(),
+      packaged: app.isPackaged
+    },
+    system: {
+      platform: process.platform,
+      arch: process.arch,
+      release: os.release(),
+      hostname: os.hostname()
+    },
+    selected: {
+      gamePath: config.gamePath || "",
+      manifestInput: config.manifestInput || "",
+      serverDirectoryInput: config.serverDirectoryInput || "",
+      lastServerId: config.lastServerId || "",
+      launchWithEac: Boolean(config.launchWithEac)
+    },
+    errors
+  };
+
+  addJsonToZip(zip, "config.json", config);
+  addJsonToZip(zip, "update-state.json", updateState);
+
+  reportSupportBundleProgress(onProgress, "scanning", "Collecting GDG diagnostic log.", 2, totalSteps);
+  await addDiagnosticFileToZip(zip, errors);
+  reportSupportBundleProgress(onProgress, "scanning", "Checking detected game folder.", 3, totalSteps);
+  await addDetectedGameToZip(zip, errors);
+  reportSupportBundleProgress(onProgress, "scanning", "Scanning local mods and game version.", 4, totalSteps);
+  await addLocalGameContextToZip(zip, config, errors);
+  reportSupportBundleProgress(onProgress, "verifying", "Checking selected server mod list.", 5, totalSteps);
+  await addServerContextToZip(zip, config, errors);
+  reportSupportBundleProgress(onProgress, "scanning", "Collecting recent 7 Days to Die logs.", 6, totalSteps);
+  await addRecentSevenDaysLogsToZip(zip, config, errors);
+
+  reportSupportBundleProgress(onProgress, "installing", "Writing support bundle zip.", 7, totalSteps);
+  addJsonToZip(zip, "summary.json", summary);
+  zip.writeZip(bundlePath);
+  reportSupportBundleProgress(onProgress, "complete", "Support bundle created.", totalSteps, totalSteps);
+
+  return {
+    path: bundlePath,
+    folderPath,
+    fileName
+  };
+}
+
+function reportSupportBundleProgress(onProgress, phase, message, current, total) {
+  onProgress({
+    phase,
+    message,
+    current,
+    total,
+    percent: total > 0 ? Math.min(100, Math.max(0, Math.round((current / total) * 100))) : 0
+  });
+}
+
+async function addDetectedGameToZip(zip, errors) {
+  try {
+    addJsonToZip(zip, "detected-game.json", await detectSevenDaysInstall());
+  } catch (error) {
+    errors.push({ section: "detected-game", error: error.message });
+  }
+}
+
+async function addLocalGameContextToZip(zip, config, errors) {
+  if (!config.gamePath) {
+    errors.push({ section: "local-game", error: "No selected game folder." });
+    return;
+  }
+
+  try {
+    addJsonToZip(zip, "local-game-version.json", await getGameVersionInfo(config.gamePath));
+  } catch (error) {
+    errors.push({ section: "local-game-version", error: error.message });
+  }
+
+  try {
+    addJsonToZip(zip, "local-disk-space.json", await getDiskSpace(config.gamePath));
+  } catch (error) {
+    errors.push({ section: "local-disk-space", error: error.message });
+  }
+
+  try {
+    addJsonToZip(zip, "local-mods.json", await scanMods(config.gamePath, { hash: false }));
+  } catch (error) {
+    errors.push({ section: "local-mods", error: error.message });
+  }
+}
+
+async function addServerContextToZip(zip, config, errors) {
+  if (!config.manifestInput) {
+    errors.push({ section: "server-context", error: "No selected sync endpoint." });
+    return;
+  }
+
+  try {
+    const manifest = await loadManifest(config.manifestInput);
+    validateManifest(manifest);
+    addJsonToZip(zip, "server-manifest.json", manifest);
+    addJsonToZip(zip, "server-size-summary.json", getManifestSizeSummary(manifest));
+  } catch (error) {
+    errors.push({ section: "server-manifest", error: error.message });
+  }
+
+  if (!config.gamePath) {
+    return;
+  }
+
+  try {
+    const preview = await previewSync({
+      gamePath: config.gamePath,
+      manifestInput: config.manifestInput
+    });
+    addJsonToZip(zip, "sync-preview.json", preview);
+  } catch (error) {
+    errors.push({ section: "sync-preview", error: error.message });
+    addTextToZip(zip, "sync-preview-error.txt", serializeErrorText(error));
+  }
+}
+
+async function addDiagnosticFileToZip(zip, errors) {
+  const logPath = getDiagnosticLogPath();
+  if (!(await exists(logPath))) {
+    addTextToZip(zip, "diagnostics/gdg-mod-loader.log", "No GDG Mod Loader diagnostic log exists yet.\n");
+    return;
+  }
+
+  try {
+    addTextToZip(zip, "diagnostics/gdg-mod-loader.log", await readTextTail(logPath, 5 * 1024 * 1024));
+  } catch (error) {
+    errors.push({ section: "diagnostic-log", error: error.message });
+  }
+}
+
+async function addRecentSevenDaysLogsToZip(zip, config, errors) {
+  try {
+    const logs = await collectRecentSevenDaysLogs(config.gamePath);
+    addJsonToZip(zip, "7-days-logs/index.json", logs.map((log) => ({
+      sourcePath: log.path,
+      sizeBytes: log.size,
+      modifiedAt: log.modifiedAt
+    })));
+
+    for (const log of logs) {
+      const safeName = sanitizeZipSegment(`${log.modifiedAt.replace(/[:.]/g, "-")}-${path.basename(log.path)}`);
+      addTextToZip(zip, `7-days-logs/${safeName}`, await readTextTail(log.path, 5 * 1024 * 1024));
+    }
+  } catch (error) {
+    errors.push({ section: "7-days-logs", error: error.message });
+  }
+}
+
+async function collectRecentSevenDaysLogs(gamePath) {
+  const candidates = [
+    path.join(os.homedir(), "AppData", "LocalLow", "The Fun Pimps", "7 Days To Die"),
+    path.join(os.homedir(), "AppData", "Roaming", "7DaysToDie"),
+    path.join(os.homedir(), "AppData", "Roaming", "7DaysToDie", "logs")
+  ];
+
+  if (gamePath) {
+    candidates.push(path.join(gamePath, "7DaysToDie_Data"));
+    candidates.push(path.join(gamePath, "logs"));
+  }
+
+  const byPath = new Map();
+  for (const candidate of dedupe(candidates)) {
+    for (const filePath of await collectLogFiles(candidate, 2)) {
+      byPath.set(path.resolve(filePath).toLowerCase(), filePath);
+    }
+  }
+
+  const logs = [];
+  for (const filePath of byPath.values()) {
+    const stats = await fsp.stat(filePath);
+    logs.push({
+      path: filePath,
+      size: stats.size,
+      modifiedAt: stats.mtime.toISOString()
+    });
+  }
+
+  logs.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+  return logs.slice(0, 10);
+}
+
+async function collectLogFiles(root, depth) {
+  if (!root || depth < 0 || !(await exists(root))) {
+    return [];
+  }
+
+  const entries = await fsp.readdir(root, { withFileTypes: true });
+  const files = [];
+
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await collectLogFiles(fullPath, depth - 1));
+    } else if (entry.isFile() && isUsefulLogFile(entry.name)) {
+      files.push(fullPath);
+    }
+  }
+
+  return files;
+}
+
+function isUsefulLogFile(fileName) {
+  const lower = fileName.toLowerCase();
+  return (
+    lower === "player.log" ||
+    lower === "player-prev.log" ||
+    lower.includes("output_log") ||
+    (lower.includes("player") && (lower.endsWith(".log") || lower.endsWith(".txt"))) ||
+    lower.endsWith(".log")
+  );
+}
+
+async function readTextTail(filePath, maxBytes) {
+  const stats = await fsp.stat(filePath);
+  if (stats.size <= maxBytes) {
+    return fsp.readFile(filePath, "utf8");
+  }
+
+  const handle = await fsp.open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    await handle.read(buffer, 0, maxBytes, stats.size - maxBytes);
+    return `[Last ${maxBytes} bytes of ${stats.size} byte file]\n${buffer.toString("utf8")}`;
+  } finally {
+    await handle.close();
+  }
+}
+
+function addJsonToZip(zip, zipPath, value) {
+  addTextToZip(zip, zipPath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function addTextToZip(zip, zipPath, text) {
+  zip.addFile(zipPath.replace(/\\/g, "/"), Buffer.from(String(text || ""), "utf8"));
+}
+
+function sanitizeZipSegment(value) {
+  return sanitizeFolderName(value).replace(/\s+/g, " ").slice(0, 180) || "log.txt";
+}
+
+function serializeErrorText(error) {
+  const serialized = serializeError(error);
+  return `${serialized.name}: ${serialized.message}\n\n${serialized.stack || ""}\n`;
 }
 
 function getUpdateStatusLabel() {
@@ -1300,8 +1628,19 @@ async function previewSync(payload) {
 
 async function applySync(payload, onProgress = () => {}) {
   const preview = await previewSync(payload);
+  const repairMode = Boolean(payload?.repair);
   if (preview.gameCompatibility.checked && !preview.gameCompatibility.ok) {
     throw new Error(`${preview.gameCompatibility.reason} Update 7 Days to Die in Steam before installing GDG mods.`);
+  }
+
+  const spaceRequirement = getSyncSpaceRequirement(preview, { repairMode });
+  if (spaceRequirement.known && spaceRequirement.bytes > 0) {
+    const diskSpace = await getDiskSpace(payload.gamePath);
+    if (diskSpace.freeBytes < spaceRequirement.bytes) {
+      throw new Error(
+        `Not enough free space on the selected game drive. GDG needs about ${formatBytes(spaceRequirement.bytes)} free for downloads, extraction, and backups, but only ${formatBytes(diskSpace.freeBytes)} is available.`
+      );
+    }
   }
 
   const modsPath = path.join(payload.gamePath, "Mods");
@@ -1316,12 +1655,14 @@ async function applySync(payload, onProgress = () => {}) {
   await fsp.mkdir(stagingRoot, { recursive: true });
   log.push(`Using sync workspace: ${workRoot}`);
 
-  const actionable = preview.plan.filter((item) => item.action === "install" || item.action === "update");
+  const actionable = getActionableSyncItems(preview, { repairMode });
   const total = actionable.length;
 
   reportSyncProgress(onProgress, {
     phase: total > 0 ? "preparing" : "complete",
-    message: total > 0 ? `Preparing ${total} mod${total === 1 ? "" : "s"}.` : "Everything is already in sync.",
+    message: total > 0
+      ? `${repairMode ? "Preparing repair for" : "Preparing"} ${total} mod${total === 1 ? "" : "s"}.`
+      : "Everything is already in sync.",
     current: 0,
     total
   });
@@ -1333,10 +1674,10 @@ async function applySync(payload, onProgress = () => {}) {
     const tempPaths = [];
 
     try {
-      log.push(`Preparing ${modName}.`);
+      log.push(`${repairMode ? "Repairing" : "Preparing"} ${modName}.`);
       reportSyncProgress(onProgress, {
         phase: "downloading",
-        message: `Downloading ${modName}.`,
+        message: repairMode ? `Repairing ${modName}: downloading package.` : `Downloading ${modName}.`,
         modName,
         modKey,
         current,
@@ -1345,7 +1686,7 @@ async function applySync(payload, onProgress = () => {}) {
       const archivePath = await downloadModArchive(item.mod, stagingRoot, (download) => {
         reportSyncProgress(onProgress, {
           phase: "downloading",
-          message: `Downloading ${modName}.`,
+          message: repairMode ? `Repairing ${modName}: downloading package.` : `Downloading ${modName}.`,
           modName,
           modKey,
           current,
@@ -1357,7 +1698,7 @@ async function applySync(payload, onProgress = () => {}) {
       tempPaths.push(archivePath);
       reportSyncProgress(onProgress, {
         phase: "extracting",
-        message: `Unpacking ${modName}.`,
+        message: repairMode ? `Repairing ${modName}: unpacking package.` : `Unpacking ${modName}.`,
         modName,
         modKey,
         current,
@@ -1371,7 +1712,7 @@ async function applySync(payload, onProgress = () => {}) {
       if (await exists(targetFolder)) {
         reportSyncProgress(onProgress, {
           phase: "backing-up",
-          message: `Backing up ${folderName}.`,
+          message: repairMode ? `Repairing ${folderName}: saving backup.` : `Backing up ${folderName}.`,
           modName,
           modKey,
           current,
@@ -1386,17 +1727,17 @@ async function applySync(payload, onProgress = () => {}) {
 
       reportSyncProgress(onProgress, {
         phase: "installing",
-        message: `Installing ${folderName}.`,
+        message: repairMode ? `Repairing ${folderName}: installing clean copy.` : `Installing ${folderName}.`,
         modName,
         modKey,
         current,
         total
       });
       await fsp.cp(sourceFolder, targetFolder, { recursive: true });
-      log.push(`${item.action === "install" ? "Installed" : "Updated"} ${folderName}.`);
+      log.push(`${getSyncActionVerb(item, repairMode)} ${folderName}.`);
       reportSyncProgress(onProgress, {
         phase: "installed",
-        message: `${item.action === "install" ? "Installed" : "Updated"} ${folderName}.`,
+        message: `${getSyncActionVerb(item, repairMode)} ${folderName}.`,
         modName,
         modKey,
         current,
@@ -1957,6 +2298,56 @@ function getManifestSizeSummary(manifest) {
     installedBytes,
     installedSizeKnown: missingInstalledSizes === 0
   };
+}
+
+function getSyncSpaceRequirement(preview, options = {}) {
+  let bytes = 0;
+  let known = true;
+  const actionable = getActionableSyncItems(preview, options);
+
+  for (const item of actionable) {
+    const mod = item.mod || {};
+    const archiveBytes = Number(mod.source?.archiveSizeBytes || mod.source?.sizeBytes || 0);
+    const folderBytes = Number(mod.folderSizeBytes || 0);
+    const extractedBytes = folderBytes || archiveBytes;
+    const packageBytes = archiveBytes || folderBytes;
+
+    if (!packageBytes || !extractedBytes) {
+      known = false;
+    }
+
+    // Peak usage includes download package, extracted staging copy, final install,
+    // and for updates an extra backup copy before the old folder is removed.
+    bytes += packageBytes + extractedBytes + extractedBytes;
+    if (item.action === "update") {
+      bytes += extractedBytes;
+    }
+  }
+
+  if (bytes > 0) {
+    bytes = Math.ceil(bytes * 1.1) + 256 * 1024 * 1024;
+  }
+
+  return { bytes, known };
+}
+
+function getActionableSyncItems(preview, options = {}) {
+  const repairMode = Boolean(options.repairMode);
+  return (preview?.plan || []).filter((item) => {
+    if (item.action === "install" || item.action === "update") {
+      return true;
+    }
+
+    return repairMode && item.action === "ready" && Boolean(item.mod?.source);
+  });
+}
+
+function getSyncActionVerb(item, repairMode) {
+  if (repairMode && item.action === "ready") {
+    return "Repaired";
+  }
+
+  return item.action === "install" ? "Installed" : "Updated";
 }
 
 async function loadRemoteManifest(url) {

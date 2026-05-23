@@ -10,6 +10,24 @@
       "gamePort": 26900,
       "queryPort": 26901,
       "syncUrl": "http://40.160.20.5:8787/gdg-sync/manifest.json"
+    },
+    {
+      "id": "gdg-pve",
+      "name": "Golden Days | US Casual PVE | Custom Mods | Cash Prizes",
+      "description": "Golden Days Gaming live PVE server",
+      "host": "40.160.20.5",
+      "gamePort": 26910,
+      "queryPort": 26911,
+      "syncUrl": "http://40.160.20.5:8788/gdg-sync/manifest.json"
+    },
+    {
+      "id": "gdg-pvp",
+      "name": "Golden Days | US Hardcore PVP | Custom Mods | Cash Prizes",
+      "description": "Golden Days Gaming live hardcore PVP server",
+      "host": "40.160.20.5",
+      "gamePort": 26920,
+      "queryPort": 26921,
+      "syncUrl": "http://40.160.20.5:8789/gdg-sync/manifest.json"
     }
   ]
 }

@@ -25,6 +25,11 @@ contextBridge.exposeInMainWorld("gdg", {
     ipcRenderer.on("gdg:sync-progress", listener);
     return () => ipcRenderer.removeListener("gdg:sync-progress", listener);
   },
+  onSupportBundleProgress: (callback) => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on("gdg:support-bundle-progress", listener);
+    return () => ipcRenderer.removeListener("gdg:support-bundle-progress", listener);
+  },
   onGameCopyDeleted: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("gdg:game-copy-deleted", listener);
@@ -33,5 +38,6 @@ contextBridge.exposeInMainWorld("gdg", {
   launchGame: (payload) => ipcRenderer.invoke("gdg:launch-game", payload),
   openSteamUpdate: () => ipcRenderer.invoke("gdg:open-steam-update"),
   openDiagnosticLog: () => ipcRenderer.invoke("gdg:open-diagnostic-log"),
+  createSupportBundle: () => ipcRenderer.invoke("gdg:create-support-bundle"),
   openPath: (filePath) => ipcRenderer.invoke("gdg:open-path", { filePath })
 });
