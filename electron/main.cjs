@@ -200,10 +200,15 @@ function registerIpc() {
 
   ipcMain.handle("gdg:open-steam-update", async () => {
     try {
-      await shell.openExternal(`steam://validate/${STEAM_APP_ID}`);
-      return { ok: true };
+      await shell.openExternal(`steam://nav/games/details/${STEAM_APP_ID}`);
+      return { ok: true, target: "steam" };
     } catch (error) {
-      return { ok: false, error: error.message };
+      try {
+        await shell.openExternal(`https://store.steampowered.com/app/${STEAM_APP_ID}/7_Days_to_Die/`);
+        return { ok: true, target: "web" };
+      } catch (fallbackError) {
+        return { ok: false, error: fallbackError.message || error.message };
+      }
     }
   });
 

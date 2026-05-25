@@ -224,7 +224,7 @@ export type GdgApi = {
   onSupportBundleProgress: (callback: (progress: SyncProgress) => void) => () => void;
   onGameCopyDeleted: (callback: (payload: { config: LoaderConfig; detected: DetectedGame; deletedPath: string }) => void) => () => void;
   launchGame: (payload: { gamePath: string; eacEnabled: boolean }) => Promise<LaunchGameResult>;
-  openSteamUpdate: () => Promise<{ ok: boolean; error?: string }>;
+  openSteamUpdate: () => Promise<{ ok: boolean; target?: "steam" | "web"; error?: string }>;
   openDiagnosticLog: () => Promise<{ ok: boolean; error?: string; path: string }>;
   createSupportBundle: () => Promise<{ ok: boolean; error?: string; path: string; folderPath: string; fileName: string }>;
   openPath: (filePath: string) => Promise<{ ok: boolean; error?: string }>;

@@ -82,6 +82,7 @@ function App() {
   const [openStep, setOpenStep] = useState<GuidedStepId | "">("setup");
   const progressPanelRef = useRef<HTMLElement | null>(null);
   const lastAutoScrolledProgressKey = useRef("");
+  const lastVersionPromptKey = useRef("");
 
   useEffect(() => {
     void initialize();
@@ -498,6 +499,22 @@ function App() {
       setScan(result.local);
       setApplyResult(null);
       setActiveTab("sync");
+      if (result.gameCompatibility.checked && !result.gameCompatibility.ok) {
+        const promptKey = `${config.gamePath}|${config.manifestInput}|${result.gameCompatibility.reason}`;
+        setOpenStep("check");
+        setError(`${result.gameCompatibility.reason} Update 7 Days to Die in Steam before installing GDG mods.`);
+        setMessage("Game update needed");
+
+        if (lastVersionPromptKey.current !== promptKey) {
+          lastVersionPromptKey.current = promptKey;
+          window.setTimeout(() => {
+            const shouldOpenSteam = window.confirm(`${result.gameCompatibility.reason}\n\nOpen 7 Days to Die in Steam now so you can update it?`);
+            if (shouldOpenSteam) {
+              void openSteamUpdate();
+            }
+          }, 50);
+        }
+      }
       setSyncProgress({
         phase: "complete",
         message: "Server mod check complete.",
@@ -670,7 +687,9 @@ function App() {
       if (!result.ok) {
         throw new Error(result.error || "Steam could not be opened.");
       }
-      setMessage("Steam opened. Update 7 Days to Die, then check server mods again.");
+      return result.target === "web"
+        ? "Steam page opened. Update 7 Days to Die, then check server mods again."
+        : "Steam opened. Update 7 Days to Die, then check server mods again.";
     });
   }
 
@@ -1135,7 +1154,9 @@ function App() {
                   title="Install Missing Mods"
                   summary={
                     preview
-                      ? modsToInstall > 0
+                      ? gameVersionMismatch
+                        ? "Update game before installing"
+                        : modsToInstall > 0
                         ? `${modsToInstall} change${modsToInstall === 1 ? "" : "s"} ready to install`
                         : localOnlyMods > 0
                           ? `${localOnlyMods} local-only mod${localOnlyMods === 1 ? "" : "s"} to review`
@@ -1156,6 +1177,15 @@ function App() {
                         <span>
                           <strong>{localOnlyMods} local-only mod{localOnlyMods === 1 ? "" : "s"} detected</strong>
                           <small>These are not part of the selected server package. Move or delete them if the game crashes or behaves differently from the server.</small>
+                        </span>
+                      </div>
+                    )}
+                    {gameVersionMismatch && (
+                      <div className="local-only-warning danger">
+                        <AlertTriangle size={18} />
+                        <span>
+                          <strong>Update 7 Days to Die before installing</strong>
+                          <small>{gameCompatibility?.reason || "The selected game folder does not match the selected server version."}</small>
                         </span>
                       </div>
                     )}
@@ -1192,11 +1222,11 @@ function App() {
                       </button>
                       <button className="secondary" type="button" onClick={repairSync} disabled={working || !preview || gameVersionMismatch || Boolean(preview.summary.blocked) || repairableMods === 0 || repairSpaceBlocked}>
                         <Wrench size={17} />
-                        {repairSpaceBlocked ? "Need Space to Repair" : "Repair Selected Folder"}
+                        {gameVersionMismatch ? "Update Game First" : repairSpaceBlocked ? "Need Space to Repair" : "Repair Selected Folder"}
                       </button>
                       <button className="primary" type="button" onClick={applySync} disabled={working || !preview || gameVersionMismatch || Boolean(preview.summary.blocked) || modsToInstall === 0 || syncSpaceBlocked}>
                         <Download size={17} />
-                        {syncSpaceBlocked ? "Need More Space" : "Install Missing Mods"}
+                        {gameVersionMismatch ? "Update Game First" : syncSpaceBlocked ? "Need More Space" : "Install Missing Mods"}
                       </button>
                     </div>
                   </div>
