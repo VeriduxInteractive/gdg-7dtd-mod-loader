@@ -22,6 +22,7 @@ The loader currently supports `zip` packages. Each archive must contain one fold
       "id": "gdg-core",
       "name": "GDG Core",
       "version": "0.1.0",
+      "audience": "client",
       "required": true,
       "folderName": "GDG-Core",
       "folderSizeBytes": 124000,
@@ -40,9 +41,11 @@ The loader currently supports `zip` packages. Each archive must contain one fold
 ## Current Sync Rules
 
 - Missing manifest mods are installed when a `source.url` is available.
+- `audience` controls where a mod may be installed. Use `client` or `shared` for player downloads. `server` entries are blocked by the loader if they ever appear in a client manifest.
 - Installed mods are updated when `version` differs or `folderSha256` differs.
 - Existing client mods that are not in the manifest are kept.
 - Existing manifest mods are backed up before replacement.
+- Known server-only Allocs folders are blocked on the client even if an older or malformed manifest lists them.
 - `archiveSha256` verifies the downloaded package before extraction.
 - `archiveSizeBytes` lets clients show the download size before syncing.
 - `folderSizeBytes` lets clients estimate installed disk space before syncing.

@@ -27,7 +27,33 @@ export type LocalMod = {
   description: string;
   hasDll: boolean;
   dllFiles: string[];
+  managed?: boolean;
+  managedRecord?: ManagedModRecord | null;
+  serverOnly?: boolean;
   folderSha256?: string;
+};
+
+export type ManagedModRecord = {
+  folderName: string;
+  modId: string;
+  name: string;
+  version: string;
+  folderSha256?: string;
+  sourceUrl?: string;
+  audience?: "client" | "shared" | "server" | string;
+  serverId?: string;
+  serverName?: string;
+  installedAt?: string;
+  updatedAt?: string;
+  lastAction?: string;
+};
+
+export type InstallState = {
+  version: number;
+  gamePath: string;
+  updatedAt: string;
+  installedMods: Record<string, ManagedModRecord>;
+  operations: Array<Record<string, unknown>>;
 };
 
 export type ScanResult = {
@@ -41,6 +67,7 @@ export type ManifestMod = {
   id: string;
   name: string;
   version?: string;
+  audience?: "client" | "shared" | "server" | string;
   required?: boolean;
   folderName?: string;
   folderSizeBytes?: number;
@@ -106,6 +133,14 @@ export type SyncPreview = {
   gameCompatibility: GameCompatibility;
   plan: SyncPlanItem[];
   summary: Record<SyncAction, number>;
+  installState?: InstallState;
+  skippedServerOnly?: SyncPlanItem[];
+  managedSummary?: {
+    installed: number;
+    extra: number;
+    serverOnlyInstalled: number;
+    operationCount: number;
+  };
   downloadBytes: number;
   downloadSizeKnown: boolean;
   installedBytes: number;
@@ -185,6 +220,7 @@ export type ServerHealth = {
   ok: boolean;
   status: "online" | "offline";
   modCount: number;
+  blockedServerOnlyCount?: number;
   downloadBytes: number;
   downloadSizeKnown: boolean;
   installedBytes: number;
@@ -204,6 +240,31 @@ export type DiskSpace = {
   totalBytes: number;
 };
 
+export type DoctorCheck = {
+  id: string;
+  label: string;
+  status: "pass" | "warn" | "fail";
+  detail: string;
+  action?: string;
+};
+
+export type DoctorResult = {
+  ok: boolean;
+  checks: DoctorCheck[];
+  preview: SyncPreview | null;
+};
+
+export type BackupEntry = {
+  id: string;
+  path: string;
+  workRoot: string;
+  name: string;
+  createdAt: string;
+  sizeBytes: number;
+  itemCount: number;
+  legacy?: boolean;
+};
+
 export type GdgApi = {
   getInitialState: () => Promise<{ config: LoaderConfig; detected: DetectedGame }>;
   saveConfig: (config: Partial<LoaderConfig>) => Promise<LoaderConfig>;
@@ -220,6 +281,13 @@ export type GdgApi = {
   previewSync: (payload: { gamePath: string; manifestInput: string }) => Promise<SyncPreview>;
   applySync: (payload: { gamePath: string; manifestInput: string; repair?: boolean }) => Promise<ApplyResult>;
   cleanLocalMods: (payload: { gamePath: string; manifestInput: string; mode?: "backup" | "delete" }) => Promise<ApplyResult>;
+  purgeModsFolder: (payload: { gamePath: string; manifestInput?: string; mode?: "backup" | "delete" }) => Promise<ApplyResult>;
+  cleanManagedMods: (payload: { gamePath: string; manifestInput?: string; mode?: "backup" | "delete"; scope?: "all" | "extra" }) => Promise<ApplyResult>;
+  resetAndReinstall: (payload: { gamePath: string; manifestInput: string; mode?: "backup" | "delete" }) => Promise<ApplyResult>;
+  runDoctor: (payload: { gamePath: string; manifestInput?: string; launchWithEac?: boolean }) => Promise<DoctorResult>;
+  listBackups: (gamePath: string) => Promise<{ backups: BackupEntry[] }>;
+  restoreBackup: (payload: { gamePath: string; backupPath: string }) => Promise<ApplyResult>;
+  deleteBackup: (payload: { gamePath: string; backupPath: string }) => Promise<{ ok: boolean; canceled?: boolean; deleted?: boolean; path: string; sizeBytes?: number }>;
   onSyncProgress: (callback: (progress: SyncProgress) => void) => () => void;
   onSupportBundleProgress: (callback: (progress: SyncProgress) => void) => () => void;
   onGameCopyDeleted: (callback: (payload: { config: LoaderConfig; detected: DetectedGame; deletedPath: string }) => void) => () => void;

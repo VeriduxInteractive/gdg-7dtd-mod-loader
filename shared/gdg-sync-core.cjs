@@ -19,6 +19,7 @@ const CLIENT_BLOCKED_SERVER_ONLY_MOD_NAMES = new Set([
   "allocs server fixes"
 ]);
 const CLIENT_BLOCKED_SERVER_ONLY_MOD_PREFIXES = ["allocs_", "allocs-", "allocs "];
+const CLIENT_INSTALLABLE_AUDIENCES = new Set(["client", "shared"]);
 
 async function scanSevenDaysMods(gameRoot, options = {}) {
   const modsPath = options.modsPath || path.join(gameRoot, "Mods");
@@ -103,12 +104,13 @@ function buildSyncPlan(manifest, localMods) {
       byName.get(String(mod.id).toLowerCase()) ||
       byName.get(String(mod.name).toLowerCase());
 
-    if (isClientBlockedServerOnlyMod(mod)) {
+    const blockedReason = getClientBlockedReason(mod);
+    if (blockedReason) {
       return {
         action: "blocked",
         mod,
         installed,
-        reason: "Server-only mod was published by mistake; GDG will not install it on clients"
+        reason: blockedReason
       };
     }
 
@@ -149,7 +151,7 @@ function buildSyncPlan(manifest, localMods) {
 
   const manifestFolders = new Set(
     manifest.mods
-      .filter((mod) => !isClientBlockedServerOnlyMod(mod))
+      .filter(isClientInstallableManifestMod)
       .map((mod) => String(mod.folderName || mod.id || mod.name).toLowerCase())
   );
   const unmanaged = localMods
@@ -176,6 +178,62 @@ function isClientBlockedServerOnlyMod(mod) {
     return CLIENT_BLOCKED_SERVER_ONLY_MOD_NAMES.has(normalized) ||
       CLIENT_BLOCKED_SERVER_ONLY_MOD_PREFIXES.some((prefix) => normalized.startsWith(prefix));
   });
+}
+
+function isClientInstallableManifestMod(mod) {
+  return CLIENT_INSTALLABLE_AUDIENCES.has(getModAudience(mod)) && !isClientBlockedServerOnlyMod(mod);
+}
+
+function getClientBlockedReason(mod) {
+  const audience = getModAudience(mod);
+  if (!CLIENT_INSTALLABLE_AUDIENCES.has(audience)) {
+    return "Server-only mod was published in the client manifest; GDG will not install it";
+  }
+
+  if (isClientBlockedServerOnlyMod(mod)) {
+    return "Known server-only mod was published by mistake; GDG will not install it on clients";
+  }
+
+  return "";
+}
+
+function getModAudience(mod) {
+  if (mod?.serverOnly === true || mod?.client === false || mod?.clientSide === false) {
+    return "server";
+  }
+
+  const audience =
+    normalizeAudience(mod?.audience) ||
+    normalizeAudience(mod?.side) ||
+    normalizeAudience(mod?.distribution) ||
+    normalizeAudience(mod?.target);
+
+  if (audience) {
+    return audience;
+  }
+
+  return "client";
+}
+
+function normalizeAudience(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/[_\s]+/g, "-");
+  if (["client", "clients", "client-only", "client-side"].includes(normalized)) {
+    return "client";
+  }
+
+  if (["shared", "both", "common", "client-server", "server-client"].includes(normalized)) {
+    return "shared";
+  }
+
+  if (["server", "server-only", "server-side", "dedicated-server", "private"].includes(normalized)) {
+    return "server";
+  }
+
+  return "";
+}
+
+function getManifestClientMods(manifest) {
+  return (manifest?.mods || []).filter(isClientInstallableManifestMod);
 }
 
 function getModKeyCandidates(mod) {
@@ -319,7 +377,11 @@ module.exports = {
   exists,
   hashDirectory,
   hashFile,
+  getClientBlockedReason,
+  getManifestClientMods,
+  getModAudience,
   isClientBlockedServerOnlyMod,
+  isClientInstallableManifestMod,
   parseModInfo,
   scanSevenDaysMods,
   slugify,

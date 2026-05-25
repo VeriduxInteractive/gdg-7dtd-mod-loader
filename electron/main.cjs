@@ -9,11 +9,20 @@ const { pipeline } = require("node:stream/promises");
 const { once } = require("node:events");
 const AdmZip = require("adm-zip");
 const yauzl = require("yauzl");
+const {
+  getClientBlockedReason,
+  getModAudience,
+  isClientBlockedServerOnlyMod,
+  isClientInstallableManifestMod
+} = require("../shared/gdg-sync-core.cjs");
 
 const GAME_ID = "7dtd";
 const GAME_NAME = "7 Days to Die";
 const STEAM_APP_ID = "251570";
 const CONFIG_VERSION = 1;
+const INSTALL_STATE_VERSION = 1;
+const OPERATION_HISTORY_LIMIT = 80;
+const BACKUP_CATEGORY_NAMES = new Set(["purged-mods", "local-only-mods", "managed-mods", "extra-managed-mods", "restore-overwritten"]);
 const DEFAULT_SERVER_DIRECTORY = path.join(__dirname, "..", "server-directory", "gdg.servers.sample.json");
 const LOADER_RELEASE_API_URL = "https://api.github.com/repos/VeriduxInteractive/gdg-7dtd-mod-loader/releases/latest";
 const LOADER_RELEASES_URL = "https://github.com/VeriduxInteractive/gdg-7dtd-mod-loader/releases";
@@ -194,6 +203,42 @@ function registerIpc() {
     });
   });
 
+  ipcMain.handle("gdg:purge-mods-folder", async (event, payload) => {
+    return purgeModsFolder(payload, (progress) => {
+      sendIpcProgress(event, "gdg:sync-progress", progress);
+    });
+  });
+
+  ipcMain.handle("gdg:clean-managed-mods", async (event, payload) => {
+    return cleanManagedMods(payload, (progress) => {
+      sendIpcProgress(event, "gdg:sync-progress", progress);
+    });
+  });
+
+  ipcMain.handle("gdg:reset-and-reinstall", async (event, payload) => {
+    return resetAndReinstall(payload, (progress) => {
+      sendIpcProgress(event, "gdg:sync-progress", progress);
+    });
+  });
+
+  ipcMain.handle("gdg:run-doctor", async (_event, payload) => {
+    return runPreflightDoctor(payload);
+  });
+
+  ipcMain.handle("gdg:list-backups", async (_event, payload) => {
+    return listBackups(payload.gamePath);
+  });
+
+  ipcMain.handle("gdg:restore-backup", async (event, payload) => {
+    return restoreBackup(payload, (progress) => {
+      sendIpcProgress(event, "gdg:sync-progress", progress);
+    });
+  });
+
+  ipcMain.handle("gdg:delete-backup", async (_event, payload) => {
+    return deleteBackup(payload);
+  });
+
   ipcMain.handle("gdg:launch-game", async (_event, payload) => {
     return launchGame(payload);
   });
@@ -264,6 +309,23 @@ function updateApplicationMenu() {
           click: () => {
             void deleteSelectedGdgCopy();
           }
+        },
+        {
+          label: "Purge Selected Mods Folder",
+          submenu: [
+            {
+              label: "Move Mods to Backup...",
+              click: () => {
+                void purgeSelectedModsFolderFromMenu("backup");
+              }
+            },
+            {
+              label: "Delete Mods Permanently...",
+              click: () => {
+                void purgeSelectedModsFolderFromMenu("delete");
+              }
+            }
+          ]
         },
         {
           label: "Open Diagnostic Log",
@@ -494,6 +556,18 @@ async function addLocalGameContextToZip(zip, config, errors) {
   } catch (error) {
     errors.push({ section: "local-mods", error: error.message });
   }
+
+  try {
+    addJsonToZip(zip, "install-state.json", await readInstallState(config.gamePath));
+  } catch (error) {
+    errors.push({ section: "install-state", error: error.message });
+  }
+
+  try {
+    addJsonToZip(zip, "backup-index.json", await listBackups(config.gamePath));
+  } catch (error) {
+    errors.push({ section: "backup-index", error: error.message });
+  }
 }
 
 async function addServerContextToZip(zip, config, errors) {
@@ -521,6 +595,12 @@ async function addServerContextToZip(zip, config, errors) {
       manifestInput: config.manifestInput
     });
     addJsonToZip(zip, "sync-preview.json", preview);
+    addJsonToZip(zip, "skipped-server-only.json", preview.skippedServerOnly || []);
+    addJsonToZip(zip, "preflight-doctor.json", await runPreflightDoctor({
+      gamePath: config.gamePath,
+      manifestInput: config.manifestInput,
+      launchWithEac: config.launchWithEac
+    }));
   } catch (error) {
     errors.push({ section: "sync-preview", error: error.message });
     addTextToZip(zip, "sync-preview-error.txt", serializeErrorText(error));
@@ -992,6 +1072,51 @@ async function deleteSelectedGdgCopy() {
   }
 }
 
+async function purgeSelectedModsFolderFromMenu(mode = "backup") {
+  const config = await loadConfig();
+
+  if (!config.gamePath) {
+    await dialog.showMessageBox(mainWindow, {
+      type: "info",
+      buttons: ["OK"],
+      title: "Purge Mods Folder",
+      message: "No game folder is currently selected.",
+      detail: "Choose or create a GDG game folder before using this option."
+    });
+    return;
+  }
+
+  try {
+    const result = await purgeModsFolder({ ...config, mode }, (progress) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("gdg:sync-progress", progress);
+      }
+    });
+
+    if (result.canceled) {
+      return;
+    }
+
+    await dialog.showMessageBox(mainWindow, {
+      type: result.ok ? "info" : "warning",
+      buttons: ["OK"],
+      title: "Purge Mods Folder",
+      message: result.ok ? "Mods folder purged." : "Mods folder purge finished with issues.",
+      detail: result.backupRoot
+        ? `Moved mods to backup:\n${result.backupRoot}\n\nRun Check Server Mods, then Install Missing Mods to redownload.`
+        : `${result.log.join("\n")}\n\nRun Check Server Mods, then Install Missing Mods to redownload.`
+    });
+  } catch (error) {
+    await dialog.showMessageBox(mainWindow, {
+      type: "error",
+      buttons: ["OK"],
+      title: "Purge Mods Folder Failed",
+      message: "GDG could not purge the selected Mods folder.",
+      detail: error.message
+    });
+  }
+}
+
 function normalizeVersion(version) {
   const match = String(version || "").trim().match(/\d+(?:\.\d+)*/);
   return match ? match[0] : "0.0.0";
@@ -1403,7 +1528,10 @@ async function buildCopyPlan(sourceRoot, targetRoot) {
 
 function isExcludedGameCopyPath(relativePath) {
   const normalized = String(relativePath || "").replace(/\\/g, "/").toLowerCase();
-  return normalized === "mods" || normalized.startsWith("mods/");
+  return normalized === "mods" ||
+    normalized.startsWith("mods/") ||
+    normalized === ".gdg-mod-loader" ||
+    normalized.startsWith(".gdg-mod-loader/");
 }
 
 async function copyFileWithProgress(sourcePath, targetPath, onChunk) {
@@ -1501,6 +1629,7 @@ async function scanMods(gamePath, options = {}) {
 
   const entries = await fsp.readdir(modsPath, { withFileTypes: true });
   const mods = [];
+  const installState = await readInstallState(gamePath);
 
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) {
@@ -1516,6 +1645,7 @@ async function scanMods(gamePath, options = {}) {
     const xml = await fsp.readFile(modInfoPath, "utf8");
     const info = parseModInfo(xml);
     const dllFiles = await findDllFiles(folderPath);
+    const managedRecord = installState.installedMods[getManagedModKey(entry.name)] || null;
     const mod = {
       folderName: entry.name,
       folderPath,
@@ -1525,7 +1655,15 @@ async function scanMods(gamePath, options = {}) {
       version: info.version || "",
       description: info.description || "",
       hasDll: dllFiles.length > 0,
-      dllFiles
+      dllFiles,
+      managed: Boolean(managedRecord),
+      managedRecord,
+      serverOnly: isClientBlockedServerOnlyMod({
+        id: entry.name,
+        folderName: entry.name,
+        name: info.name || entry.name,
+        displayName: info.displayName || info.name || entry.name
+      })
     };
 
     if (options.hash) {
@@ -1620,6 +1758,16 @@ async function previewSync(payload) {
   const local = await scanMods(gamePath, { hash: true });
   const plan = buildSyncPlan(manifest, local.mods);
   const sizeSummary = getManifestSizeSummary(manifest);
+  const installState = await readInstallState(gamePath);
+  const clientManifestFolders = new Set(
+    manifest.mods
+      .filter(isClientInstallableManifestMod)
+      .map((mod) => String(mod.folderName || mod.id || mod.name).toLowerCase())
+  );
+  const skippedServerOnly = plan.filter((item) => item.action === "blocked" && getClientBlockedReason(item.mod));
+  const managedInstalled = local.mods.filter((mod) => mod.managed);
+  const managedExtra = managedInstalled.filter((mod) => !clientManifestFolders.has(mod.folderName.toLowerCase()));
+  const serverOnlyInstalled = local.mods.filter((mod) => mod.serverOnly);
 
   return {
     manifest,
@@ -1627,6 +1775,14 @@ async function previewSync(payload) {
     gameCompatibility,
     plan,
     summary: summarizePlan(plan),
+    installState,
+    skippedServerOnly,
+    managedSummary: {
+      installed: managedInstalled.length,
+      extra: managedExtra.length,
+      serverOnlyInstalled: serverOnlyInstalled.length,
+      operationCount: installState.operations.length
+    },
     ...sizeSummary
   };
 }
@@ -1740,6 +1896,7 @@ async function applySync(payload, onProgress = () => {}) {
       });
       await fsp.cp(sourceFolder, targetFolder, { recursive: true });
       log.push(`${getSyncActionVerb(item, repairMode)} ${folderName}.`);
+      await markManagedModInstalled(payload.gamePath, item, folderName, getSyncActionVerb(item, repairMode), preview.manifest);
       reportSyncProgress(onProgress, {
         phase: "installed",
         message: `${getSyncActionVerb(item, repairMode)} ${folderName}.`,
@@ -1800,6 +1957,17 @@ async function applySync(payload, onProgress = () => {}) {
     });
   }
 
+  await recordInstallOperation(payload.gamePath, {
+    type: repairMode ? "repair-sync" : "sync",
+    mode: repairMode ? "repair" : "install",
+    manifestInput: payload.manifestInput || "",
+    serverId: preview.manifest?.server?.id || "",
+    serverName: preview.manifest?.server?.name || "",
+    affectedCount: total,
+    failedCount: failures.length,
+    backupRoot: (await exists(backupRoot)) ? backupRoot : ""
+  });
+
   return {
     ok: failures.length === 0,
     failedCount: failures.length,
@@ -1812,7 +1980,129 @@ async function applySync(payload, onProgress = () => {}) {
 }
 
 function getSyncWorkRoot(gamePath) {
+  return path.join(path.resolve(String(gamePath || os.homedir())), ".gdg-mod-loader");
+}
+
+function getLegacySyncWorkRoot(gamePath) {
   return path.join(path.dirname(path.resolve(String(gamePath || os.homedir()))), ".gdg-mod-loader");
+}
+
+function getSyncWorkRoots(gamePath) {
+  return dedupe([getSyncWorkRoot(gamePath), getLegacySyncWorkRoot(gamePath)]);
+}
+
+function getInstallStatePath(gamePath) {
+  return path.join(getSyncWorkRoot(gamePath), "install-state.json");
+}
+
+function getDefaultInstallState(gamePath) {
+  return {
+    version: INSTALL_STATE_VERSION,
+    gamePath: path.resolve(String(gamePath || "")),
+    updatedAt: "",
+    installedMods: {},
+    operations: []
+  };
+}
+
+async function readInstallState(gamePath) {
+  const statePath = getInstallStatePath(gamePath);
+  try {
+    const raw = await fsp.readFile(statePath, "utf8");
+    return normalizeInstallState(JSON.parse(raw), gamePath);
+  } catch {
+    return getDefaultInstallState(gamePath);
+  }
+}
+
+async function writeInstallState(gamePath, state) {
+  const normalized = normalizeInstallState(state, gamePath);
+  normalized.updatedAt = new Date().toISOString();
+  await fsp.mkdir(path.dirname(getInstallStatePath(gamePath)), { recursive: true });
+  await fsp.writeFile(getInstallStatePath(gamePath), `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  return normalized;
+}
+
+function normalizeInstallState(state, gamePath) {
+  const normalized = {
+    ...getDefaultInstallState(gamePath),
+    ...(state && typeof state === "object" ? state : {})
+  };
+
+  if (!normalized.installedMods || typeof normalized.installedMods !== "object" || Array.isArray(normalized.installedMods)) {
+    normalized.installedMods = {};
+  }
+
+  normalized.operations = Array.isArray(normalized.operations)
+    ? normalized.operations.filter((operation) => operation && typeof operation === "object").slice(-OPERATION_HISTORY_LIMIT)
+    : [];
+
+  return normalized;
+}
+
+function getManagedModKey(folderName) {
+  return String(folderName || "").trim().toLowerCase();
+}
+
+async function markManagedModInstalled(gamePath, item, folderName, action, manifest) {
+  const key = getManagedModKey(folderName);
+  if (!key) {
+    return;
+  }
+
+  const state = await readInstallState(gamePath);
+  const now = new Date().toISOString();
+  const current = state.installedMods[key] || {};
+  state.installedMods[key] = {
+    ...current,
+    folderName,
+    modId: item.mod.id || "",
+    name: item.mod.name || folderName,
+    version: item.mod.version || "",
+    folderSha256: item.mod.folderSha256 || "",
+    sourceUrl: item.mod.source?.url || "",
+    audience: getModAudience(item.mod),
+    serverId: manifest?.server?.id || "",
+    serverName: manifest?.server?.name || "",
+    installedAt: current.installedAt || now,
+    updatedAt: now,
+    lastAction: action
+  };
+  await writeInstallState(gamePath, state);
+}
+
+async function removeManagedModRecords(gamePath, folderNames) {
+  const names = (folderNames || []).map(getManagedModKey).filter(Boolean);
+  if (names.length === 0) {
+    return;
+  }
+
+  const state = await readInstallState(gamePath);
+  let changed = false;
+  for (const name of names) {
+    if (state.installedMods[name]) {
+      delete state.installedMods[name];
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    await writeInstallState(gamePath, state);
+  }
+}
+
+async function recordInstallOperation(gamePath, operation) {
+  if (!gamePath) {
+    return;
+  }
+
+  const state = await readInstallState(gamePath);
+  state.operations.push({
+    at: new Date().toISOString(),
+    ...operation
+  });
+  state.operations = state.operations.slice(-OPERATION_HISTORY_LIMIT);
+  await writeInstallState(gamePath, state);
 }
 
 async function cleanupSyncTempPaths(tempPaths) {
@@ -1866,6 +2156,7 @@ async function cleanLocalMods(payload, onProgress = () => {}) {
   const backupRoot = path.join(getSyncWorkRoot(payload.gamePath), "backups", timestamp, "local-only-mods");
   const log = [];
   const failures = [];
+  const removedManagedFolders = [];
 
   if (localOnly.length === 0) {
     reportSyncProgress(onProgress, {
@@ -1963,6 +2254,7 @@ async function cleanLocalMods(payload, onProgress = () => {}) {
         });
       }
       await fsp.rm(sourcePath, { recursive: true, force: true });
+      removedManagedFolders.push(folderName);
       log.push(mode === "delete" ? `Deleted ${folderName}.` : `Moved ${folderName} to backup.`);
       reportSyncProgress(onProgress, {
         phase: "installed",
@@ -2016,6 +2308,16 @@ async function cleanLocalMods(payload, onProgress = () => {}) {
     total: localOnly.length
   });
 
+  await removeManagedModRecords(payload.gamePath, removedManagedFolders);
+  await recordInstallOperation(payload.gamePath, {
+    type: "clean-local-only",
+    mode,
+    manifestInput: payload.manifestInput || "",
+    affectedCount: removedManagedFolders.length,
+    failedCount: failures.length,
+    backupRoot: mode === "backup" ? backupRoot : ""
+  });
+
   return {
     ok: failures.length === 0,
     failedCount: failures.length,
@@ -2025,6 +2327,866 @@ async function cleanLocalMods(payload, onProgress = () => {}) {
     log,
     preview: nextPreview
   };
+}
+
+async function purgeModsFolder(payload, onProgress = () => {}) {
+  const rawGamePath = String(payload?.gamePath || "").trim();
+
+  if (!rawGamePath) {
+    throw new Error("Select a 7 Days to Die folder first.");
+  }
+
+  const gamePath = path.resolve(rawGamePath);
+
+  if (!(await isSevenDaysGameRoot(gamePath))) {
+    throw new Error("That folder does not look like a 7 Days to Die install.");
+  }
+
+  const modsPath = path.join(gamePath, "Mods");
+  await fsp.mkdir(modsPath, { recursive: true });
+
+  const entries = await fsp.readdir(modsPath, { withFileTypes: true });
+  const purgeEntries = entries.filter((entry) => entry.isDirectory() || entry.isFile() || entry.isSymbolicLink());
+  const mode = payload?.mode === "delete" ? "delete" : "backup";
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupRoot = path.join(getSyncWorkRoot(gamePath), "backups", timestamp, "purged-mods");
+  const log = [];
+  const failures = [];
+  const purgedFolderNames = [];
+
+  if (purgeEntries.length === 0) {
+    reportSyncProgress(onProgress, {
+      phase: "complete",
+      message: "Mods folder is already empty.",
+      current: 1,
+      total: 1
+    });
+
+    return {
+      ok: true,
+      failedCount: 0,
+      failures,
+      backupRoot: "",
+      diagnosticLogPath: "",
+      log: ["Mods folder is already empty."],
+      preview: await previewAfterOptionalPurge(payload, log)
+    };
+  }
+
+  const confirmation = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    buttons: [mode === "delete" ? "Delete Permanently" : "Move to Backup", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: "Purge Mods Folder",
+    message:
+      mode === "delete"
+        ? `Permanently delete ${purgeEntries.length} item${purgeEntries.length === 1 ? "" : "s"} from the selected Mods folder?`
+        : `Move ${purgeEntries.length} item${purgeEntries.length === 1 ? "" : "s"} out of the selected Mods folder?`,
+    detail:
+      mode === "delete"
+        ? `GDG will permanently remove all immediate contents of:\n${modsPath}\n\nThis does not create a backup. The selected game copy is not deleted. Run Check Server Mods, then Install Missing Mods to redownload everything cleanly.`
+        : `GDG will empty this folder:\n${modsPath}\n\nBackup location:\n${backupRoot}\n\nThe selected game copy is not deleted. Run Check Server Mods, then Install Missing Mods to redownload everything cleanly.`
+  });
+
+  if (confirmation.response !== 0) {
+    reportSyncProgress(onProgress, {
+      phase: "complete",
+      message: "Mods folder purge canceled.",
+      current: 1,
+      total: 1
+    });
+
+    return {
+      ok: false,
+      canceled: true,
+      failedCount: 0,
+      failures,
+      backupRoot: "",
+      diagnosticLogPath: "",
+      log: ["Mods folder purge canceled."],
+      preview: null
+    };
+  }
+
+  if (mode === "backup") {
+    await fsp.mkdir(backupRoot, { recursive: true });
+  }
+
+  reportSyncProgress(onProgress, {
+    phase: "preparing",
+    message:
+      mode === "delete"
+        ? `Preparing to delete ${purgeEntries.length} Mods folder item${purgeEntries.length === 1 ? "" : "s"}.`
+        : `Preparing to move ${purgeEntries.length} Mods folder item${purgeEntries.length === 1 ? "" : "s"} to backup.`,
+    current: 0,
+    total: purgeEntries.length
+  });
+
+  const usedTargets = new Set();
+  for (const [index, entry] of purgeEntries.entries()) {
+    const current = index + 1;
+    const sourcePath = path.resolve(modsPath, entry.name);
+    const backupTarget = mode === "backup" ? getUniqueBackupTarget(backupRoot, sanitizeFolderName(entry.name), usedTargets) : "";
+
+    try {
+      if (!sourcePath.toLowerCase().startsWith(`${modsPath.toLowerCase()}${path.sep}`)) {
+        throw new Error("Mods folder item is outside the selected Mods folder.");
+      }
+
+      reportSyncProgress(onProgress, {
+        phase: mode === "delete" ? "installing" : "backing-up",
+        message: mode === "delete" ? `Deleting ${entry.name}.` : `Moving ${entry.name} to backup.`,
+        modName: entry.name,
+        modKey: entry.name,
+        current,
+        total: purgeEntries.length
+      });
+
+      if (mode === "delete") {
+        await fsp.rm(sourcePath, { recursive: true, force: true });
+        log.push(`Deleted ${entry.name}.`);
+      } else {
+        await movePathToBackup(sourcePath, backupTarget);
+        log.push(`Moved ${entry.name} to backup.`);
+      }
+      purgedFolderNames.push(entry.name);
+
+      reportSyncProgress(onProgress, {
+        phase: "installed",
+        message: mode === "delete" ? `Deleted ${entry.name}.` : `Moved ${entry.name} to backup.`,
+        modName: entry.name,
+        modKey: entry.name,
+        current,
+        total: purgeEntries.length
+      });
+    } catch (error) {
+      reportSyncProgress(onProgress, {
+        phase: "failed",
+        message: `Failed ${entry.name}: ${error.message}`,
+        modName: entry.name,
+        modKey: entry.name,
+        current,
+        total: purgeEntries.length
+      });
+      log.push(`Failed ${entry.name}: ${error.message}`);
+      failures.push({ modName: entry.name, error: error.message });
+    }
+  }
+
+  reportSyncProgress(onProgress, {
+    phase: "verifying",
+    message: "Checking purged Mods folder.",
+    current: purgeEntries.length,
+    total: purgeEntries.length
+  });
+
+  const nextScan = await scanMods(gamePath, { hash: false });
+  log.push(`${nextScan.mods.length} mod${nextScan.mods.length === 1 ? "" : "s"} remain after purge.`);
+  const nextPreview = await previewAfterOptionalPurge(payload, log);
+  await removeManagedModRecords(gamePath, purgedFolderNames);
+  await recordInstallOperation(gamePath, {
+    type: "purge-mods",
+    mode,
+    manifestInput: payload.manifestInput || "",
+    affectedCount: purgedFolderNames.length,
+    failedCount: failures.length,
+    backupRoot: mode === "backup" && purgedFolderNames.length > 0 ? backupRoot : ""
+  });
+
+  reportSyncProgress(onProgress, {
+    phase: failures.length > 0 ? "failed" : "complete",
+    message:
+      failures.length > 0
+        ? `Mods folder purge finished with ${failures.length} failure${failures.length === 1 ? "" : "s"}.`
+        : mode === "delete"
+          ? "Mods folder deleted. Run Install Missing Mods to redownload."
+          : "Mods folder moved to backup. Run Install Missing Mods to redownload.",
+    current: purgeEntries.length - failures.length,
+    total: purgeEntries.length
+  });
+
+  return {
+    ok: failures.length === 0,
+    failedCount: failures.length,
+    failures,
+    backupRoot: mode === "backup" && failures.length < purgeEntries.length ? backupRoot : "",
+    diagnosticLogPath: failures.length > 0 ? getDiagnosticLogPath() : "",
+    log,
+    preview: nextPreview
+  };
+}
+
+async function previewAfterOptionalPurge(payload, log) {
+  if (!payload?.manifestInput) {
+    return null;
+  }
+
+  try {
+    return await previewSync(payload);
+  } catch (error) {
+    log.push(`Server mod check after purge failed: ${error.message}`);
+    await appendDiagnosticLog("gdg:purge-mods-folder-preview", error, {
+      gamePath: payload?.gamePath,
+      manifestInput: payload?.manifestInput
+    });
+    return null;
+  }
+}
+
+async function movePathToBackup(sourcePath, backupTarget) {
+  try {
+    await fsp.rename(sourcePath, backupTarget);
+  } catch (error) {
+    if (error.code !== "EXDEV") {
+      throw error;
+    }
+
+    await fsp.cp(sourcePath, backupTarget, { recursive: true, force: false });
+    await fsp.rm(sourcePath, { recursive: true, force: true });
+  }
+}
+
+function getUniqueBackupTarget(backupRoot, folderName, usedTargets) {
+  const parsed = path.parse(folderName || "mod");
+  let targetName = folderName || "mod";
+  let suffix = 1;
+  while (usedTargets.has(targetName.toLowerCase())) {
+    targetName = `${parsed.name || "mod"}-${suffix}${parsed.ext || ""}`;
+    suffix += 1;
+  }
+  usedTargets.add(targetName.toLowerCase());
+  return path.join(backupRoot, targetName);
+}
+
+async function cleanManagedMods(payload, onProgress = () => {}) {
+  const gamePath = path.resolve(String(payload?.gamePath || ""));
+  if (!gamePath || !(await isSevenDaysGameRoot(gamePath))) {
+    throw new Error("Select a valid 7 Days to Die folder first.");
+  }
+
+  const mode = payload?.mode === "delete" ? "delete" : "backup";
+  const scope = payload?.scope === "extra" ? "extra" : "all";
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupRoot = path.join(getSyncWorkRoot(gamePath), "backups", timestamp, scope === "extra" ? "extra-managed-mods" : "managed-mods");
+  const modsPath = path.join(gamePath, "Mods");
+  let preview = null;
+  let local = await scanMods(gamePath, { hash: false });
+  const log = [];
+  const failures = [];
+  const removedManagedFolders = [];
+
+  if (payload?.manifestInput) {
+    preview = await previewSync(payload);
+    local = preview.local;
+  }
+
+  const manifestFolders = new Set(
+    (preview?.manifest?.mods || [])
+      .filter(isClientInstallableManifestMod)
+      .map((mod) => String(mod.folderName || mod.id || mod.name).toLowerCase())
+  );
+  const targets = local.mods.filter((mod) => {
+    const isManagedOrServerOnly = Boolean(mod.managed || mod.serverOnly);
+    if (!isManagedOrServerOnly) {
+      return false;
+    }
+
+    if (scope === "all") {
+      return true;
+    }
+
+    return mod.serverOnly || !manifestFolders.has(mod.folderName.toLowerCase());
+  });
+
+  if (targets.length === 0) {
+    reportSyncProgress(onProgress, {
+      phase: "complete",
+      message: scope === "extra" ? "No extra GDG-managed mods found." : "No GDG-managed mods found.",
+      current: 1,
+      total: 1
+    });
+
+    return {
+      ok: true,
+      failedCount: 0,
+      failures,
+      backupRoot: "",
+      diagnosticLogPath: "",
+      log: [scope === "extra" ? "No extra GDG-managed mods found." : "No GDG-managed mods found."],
+      preview
+    };
+  }
+
+  const confirmation = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    buttons: [mode === "delete" ? "Delete Permanently" : "Move to Backup", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: scope === "extra" ? "Remove Extra GDG-Managed Mods" : "Remove GDG-Managed Mods",
+    message:
+      mode === "delete"
+        ? `Permanently delete ${targets.length} GDG-managed or known server-only mod${targets.length === 1 ? "" : "s"}?`
+        : `Move ${targets.length} GDG-managed or known server-only mod${targets.length === 1 ? "" : "s"} to backup?`,
+    detail:
+      mode === "delete"
+        ? "Personal mods are skipped unless they are known server-only folders. This does not create a backup."
+        : `Personal mods are skipped unless they are known server-only folders.\n\nBackup location:\n${backupRoot}`
+  });
+
+  if (confirmation.response !== 0) {
+    reportSyncProgress(onProgress, {
+      phase: "complete",
+      message: "GDG-managed cleanup canceled.",
+      current: 1,
+      total: 1
+    });
+
+    return {
+      ok: false,
+      canceled: true,
+      failedCount: 0,
+      failures,
+      backupRoot: "",
+      diagnosticLogPath: "",
+      log: ["GDG-managed cleanup canceled."],
+      preview
+    };
+  }
+
+  if (mode === "backup") {
+    await fsp.mkdir(backupRoot, { recursive: true });
+  }
+
+  reportSyncProgress(onProgress, {
+    phase: "preparing",
+    message: mode === "delete" ? `Preparing to delete ${targets.length} GDG-managed mod${targets.length === 1 ? "" : "s"}.` : `Preparing to move ${targets.length} GDG-managed mod${targets.length === 1 ? "" : "s"} to backup.`,
+    current: 0,
+    total: targets.length
+  });
+
+  const usedTargets = new Set();
+  for (const [index, mod] of targets.entries()) {
+    const current = index + 1;
+    const folderName = sanitizeFolderName(mod.folderName);
+    const sourcePath = path.resolve(mod.folderPath);
+    const backupTarget = mode === "backup" ? getUniqueBackupTarget(backupRoot, folderName, usedTargets) : "";
+
+    try {
+      if (!sourcePath.toLowerCase().startsWith(`${modsPath.toLowerCase()}${path.sep}`)) {
+        throw new Error("Mod folder is outside the selected Mods folder.");
+      }
+
+      reportSyncProgress(onProgress, {
+        phase: mode === "delete" ? "installing" : "backing-up",
+        message: mode === "delete" ? `Deleting ${folderName}.` : `Moving ${folderName} to backup.`,
+        modName: mod.displayName || folderName,
+        modKey: folderName,
+        current,
+        total: targets.length
+      });
+
+      if (mode === "delete") {
+        await fsp.rm(sourcePath, { recursive: true, force: true });
+        log.push(`Deleted ${folderName}.`);
+      } else {
+        await movePathToBackup(sourcePath, backupTarget);
+        log.push(`Moved ${folderName} to backup.`);
+      }
+
+      removedManagedFolders.push(folderName);
+      reportSyncProgress(onProgress, {
+        phase: "installed",
+        message: mode === "delete" ? `Deleted ${folderName}.` : `Moved ${folderName} to backup.`,
+        modName: mod.displayName || folderName,
+        modKey: folderName,
+        current,
+        total: targets.length
+      });
+    } catch (error) {
+      reportSyncProgress(onProgress, {
+        phase: "failed",
+        message: `Failed ${folderName}: ${error.message}`,
+        modName: mod.displayName || folderName,
+        modKey: folderName,
+        current,
+        total: targets.length
+      });
+      log.push(`Failed ${folderName}: ${error.message}`);
+      failures.push({ modName: mod.displayName || folderName, error: error.message });
+    }
+  }
+
+  await removeManagedModRecords(gamePath, removedManagedFolders);
+  let nextPreview = preview;
+  if (payload?.manifestInput) {
+    try {
+      nextPreview = await previewSync(payload);
+    } catch (error) {
+      log.push(`Server mod check after cleanup failed: ${error.message}`);
+      await appendDiagnosticLog("gdg:clean-managed-mods-preview", error, {
+        gamePath,
+        manifestInput: payload?.manifestInput
+      });
+    }
+  }
+
+  await recordInstallOperation(gamePath, {
+    type: scope === "extra" ? "clean-extra-managed" : "clean-managed",
+    mode,
+    manifestInput: payload?.manifestInput || "",
+    affectedCount: removedManagedFolders.length,
+    failedCount: failures.length,
+    backupRoot: mode === "backup" && removedManagedFolders.length > 0 ? backupRoot : ""
+  });
+
+  reportSyncProgress(onProgress, {
+    phase: failures.length > 0 ? "failed" : "complete",
+    message:
+      failures.length > 0
+        ? `GDG-managed cleanup finished with ${failures.length} failure${failures.length === 1 ? "" : "s"}.`
+        : mode === "delete"
+          ? "GDG-managed mods deleted."
+          : "GDG-managed mods moved to backup.",
+    current: targets.length - failures.length,
+    total: targets.length
+  });
+
+  return {
+    ok: failures.length === 0,
+    failedCount: failures.length,
+    failures,
+    backupRoot: mode === "backup" && removedManagedFolders.length > 0 ? backupRoot : "",
+    diagnosticLogPath: failures.length > 0 ? getDiagnosticLogPath() : "",
+    log,
+    preview: nextPreview
+  };
+}
+
+async function resetAndReinstall(payload, onProgress = () => {}) {
+  const purgeResult = await purgeModsFolder(payload, onProgress);
+  if (purgeResult.canceled || !purgeResult.ok) {
+    return purgeResult;
+  }
+
+  const syncResult = await applySync(payload, onProgress);
+  return {
+    ...syncResult,
+    ok: purgeResult.ok && syncResult.ok,
+    failedCount: (purgeResult.failedCount || 0) + (syncResult.failedCount || 0),
+    failures: [...(purgeResult.failures || []), ...(syncResult.failures || [])],
+    backupRoot: purgeResult.backupRoot || syncResult.backupRoot || "",
+    log: [
+      ...purgeResult.log,
+      "Reinstall started after purge.",
+      ...syncResult.log
+    ],
+    preview: syncResult.preview
+  };
+}
+
+async function runPreflightDoctor(payload = {}) {
+  const gamePath = path.resolve(String(payload.gamePath || ""));
+  const checks = [];
+  let preview = null;
+  let local = null;
+  let diskSpace = null;
+
+  function addCheck(id, label, status, detail, action = "") {
+    checks.push({ id, label, status, detail, action });
+  }
+
+  if (!payload.gamePath) {
+    addCheck("game-folder", "Game folder", "fail", "No 7 Days to Die folder is selected.", "Choose a game folder.");
+    return { ok: false, checks, preview: null };
+  }
+
+  const validGameRoot = await isSevenDaysGameRoot(gamePath);
+  addCheck(
+    "game-folder",
+    "Game folder",
+    validGameRoot ? "pass" : "fail",
+    validGameRoot ? "Selected folder looks like 7 Days to Die." : "Selected folder does not look like a 7 Days to Die install.",
+    validGameRoot ? "" : "Browse to the 7 Days to Die install folder."
+  );
+
+  if (!validGameRoot) {
+    return { ok: false, checks, preview: null };
+  }
+
+  const modsPath = path.join(gamePath, "Mods");
+  try {
+    await fsp.mkdir(modsPath, { recursive: true });
+    const probePath = path.join(modsPath, `.gdg-write-test-${Date.now()}.tmp`);
+    await fsp.writeFile(probePath, "ok", "utf8");
+    await fsp.rm(probePath, { force: true });
+    addCheck("write-permission", "Mods folder access", "pass", "GDG can write to the selected Mods folder.");
+  } catch (error) {
+    addCheck("write-permission", "Mods folder access", "fail", `GDG cannot write to the Mods folder: ${error.message}`, "Run as a user with write access or choose a writable GDG copy.");
+  }
+
+  try {
+    diskSpace = await getDiskSpace(gamePath);
+    addCheck("disk-space", "Free disk space", "pass", `${formatBytes(diskSpace.freeBytes)} free on the selected drive.`);
+  } catch (error) {
+    addCheck("disk-space", "Free disk space", "warn", `Free space could not be checked: ${error.message}`);
+  }
+
+  try {
+    local = await scanMods(gamePath, { hash: false });
+  } catch (error) {
+    addCheck("local-mods", "Installed mods", "fail", `Installed mods could not be scanned: ${error.message}`);
+  }
+
+  if (!payload.manifestInput) {
+    addCheck("manifest", "Server manifest", "fail", "No server sync endpoint is selected.", "Select a GDG server or manifest.");
+  } else {
+    try {
+      preview = await previewSync(payload);
+      local = preview.local;
+      addCheck("manifest", "Server manifest", "pass", `${preview.manifest.mods.length} manifest entries loaded.`);
+
+      if (preview.gameCompatibility.checked) {
+        addCheck(
+          "game-version",
+          "Game version",
+          preview.gameCompatibility.ok ? "pass" : "fail",
+          preview.gameCompatibility.reason,
+          preview.gameCompatibility.ok ? "" : "Update 7 Days to Die in Steam, then retry the check."
+        );
+      } else {
+        addCheck("game-version", "Game version", "warn", preview.gameCompatibility.reason, "Publish a Steam build id for stricter checks.");
+      }
+
+      const skippedCount = preview.skippedServerOnly?.length || 0;
+      addCheck(
+        "manifest-audience",
+        "Manifest audience",
+        skippedCount > 0 ? "warn" : "pass",
+        skippedCount > 0
+          ? `${skippedCount} server-only manifest entr${skippedCount === 1 ? "y was" : "ies were"} blocked from client install.`
+          : "Manifest contains only client-installable entries."
+      );
+
+      const neededSpace = getSyncSpaceRequirement(preview);
+      if (diskSpace && neededSpace.known && neededSpace.bytes > 0) {
+        addCheck(
+          "sync-space",
+          "Install space",
+          diskSpace.freeBytes >= neededSpace.bytes ? "pass" : "fail",
+          `Estimated need ${formatBytes(neededSpace.bytes)}; available ${formatBytes(diskSpace.freeBytes)}.`,
+          diskSpace.freeBytes >= neededSpace.bytes ? "" : "Delete old backups or use Delete + Reinstall."
+        );
+      } else if (neededSpace.bytes > 0) {
+        addCheck("sync-space", "Install space", "warn", "Some package sizes are missing, so required space is an estimate.");
+      } else {
+        addCheck("sync-space", "Install space", "pass", "No downloads are currently needed.");
+      }
+    } catch (error) {
+      addCheck("manifest", "Server manifest", "fail", `Server manifest could not be checked: ${error.message}`, "Refresh server status or verify the sync URL.");
+    }
+  }
+
+  if (local) {
+    const serverOnlyLocal = local.mods.filter((mod) => mod.serverOnly);
+    addCheck(
+      "server-only-local",
+      "Server-only local mods",
+      serverOnlyLocal.length > 0 ? "fail" : "pass",
+      serverOnlyLocal.length > 0
+        ? `${serverOnlyLocal.length} known server-only mod${serverOnlyLocal.length === 1 ? "" : "s"} found locally: ${serverOnlyLocal.map((mod) => mod.folderName).join(", ")}.`
+        : "No known server-only mods are installed locally.",
+      serverOnlyLocal.length > 0 ? "Remove GDG-managed/server-only mods." : ""
+    );
+
+    const dllMods = local.mods.filter((mod) => mod.hasDll);
+    const serverEacEnabled = typeof preview?.manifest?.server?.eacEnabled === "boolean" ? preview.manifest.server.eacEnabled : null;
+    const requestedEac = payload.launchWithEac !== undefined ? Boolean(payload.launchWithEac) : true;
+    const eacStatus = (serverEacEnabled !== null && serverEacEnabled !== requestedEac) || (requestedEac && dllMods.length > 0) ? "warn" : "pass";
+    addCheck(
+      "eac",
+      "EAC launch mode",
+      eacStatus,
+      serverEacEnabled !== null && serverEacEnabled !== requestedEac
+        ? `Server EAC is ${serverEacEnabled ? "on" : "off"}, but launcher is set to ${requestedEac ? "on" : "off"}.`
+        : requestedEac && dllMods.length > 0
+          ? `${dllMods.length} DLL mod${dllMods.length === 1 ? "" : "s"} detected while EAC launch is on.`
+          : "EAC setting looks compatible with the current scan.",
+      eacStatus === "warn" ? "Match the server EAC setting before launch." : ""
+    );
+
+    const managedExtra = preview?.managedSummary?.extra || 0;
+    addCheck(
+      "managed-extra",
+      "Extra GDG-managed mods",
+      managedExtra > 0 ? "warn" : "pass",
+      managedExtra > 0
+        ? `${managedExtra} GDG-managed mod${managedExtra === 1 ? " is" : "s are"} not part of the selected server package.`
+        : "No extra GDG-managed mods found."
+    );
+  }
+
+  return {
+    ok: checks.every((check) => check.status !== "fail"),
+    checks,
+    preview
+  };
+}
+
+async function listBackups(gamePath) {
+  if (!gamePath) {
+    return { backups: [] };
+  }
+
+  const backups = [];
+  for (const workRoot of getSyncWorkRoots(gamePath)) {
+    const backupsRoot = path.join(workRoot, "backups");
+    if (!(await exists(backupsRoot))) {
+      continue;
+    }
+
+    const timestampEntries = await fsp.readdir(backupsRoot, { withFileTypes: true }).catch(() => []);
+    for (const timestampEntry of timestampEntries) {
+      if (!timestampEntry.isDirectory()) {
+        continue;
+      }
+
+      const timestampPath = path.join(backupsRoot, timestampEntry.name);
+      const childEntries = await fsp.readdir(timestampPath, { withFileTypes: true }).catch(() => []);
+      const categoryEntries = childEntries.filter((entry) => entry.isDirectory() && BACKUP_CATEGORY_NAMES.has(entry.name.toLowerCase()));
+      const backupFolders = categoryEntries.length > 0
+        ? categoryEntries.map((entry) => path.join(timestampPath, entry.name))
+        : [timestampPath];
+
+      for (const backupPath of backupFolders) {
+        const stat = await fsp.stat(backupPath);
+        const entries = await fsp.readdir(backupPath, { withFileTypes: true }).catch(() => []);
+        const sizeBytes = await getPathSize(backupPath);
+        backups.push({
+          id: Buffer.from(backupPath).toString("base64url"),
+          path: backupPath,
+          workRoot,
+          name: path.basename(backupPath),
+          createdAt: parseBackupTimestamp(timestampEntry.name) || stat.mtime.toISOString(),
+          sizeBytes,
+          itemCount: entries.filter((entry) => entry.isDirectory() || entry.isFile() || entry.isSymbolicLink()).length,
+          legacy: path.resolve(workRoot).toLowerCase() === path.resolve(getLegacySyncWorkRoot(gamePath)).toLowerCase()
+        });
+      }
+    }
+  }
+
+  backups.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return { backups };
+}
+
+async function restoreBackup(payload, onProgress = () => {}) {
+  const gamePath = path.resolve(String(payload?.gamePath || ""));
+  const backupPath = path.resolve(String(payload?.backupPath || ""));
+  if (!gamePath || !(await isSevenDaysGameRoot(gamePath))) {
+    throw new Error("Select a valid 7 Days to Die folder first.");
+  }
+
+  assertManagedBackupPath(gamePath, backupPath);
+  if (!(await exists(backupPath))) {
+    throw new Error("Backup folder does not exist.");
+  }
+
+  const modsPath = path.join(gamePath, "Mods");
+  const entries = (await fsp.readdir(backupPath, { withFileTypes: true })).filter((entry) => entry.isDirectory() || entry.isFile() || entry.isSymbolicLink());
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const overwrittenBackupRoot = path.join(getSyncWorkRoot(gamePath), "backups", timestamp, "restore-overwritten");
+  const log = [];
+  const failures = [];
+
+  if (entries.length === 0) {
+    return {
+      ok: true,
+      failedCount: 0,
+      failures,
+      backupRoot: "",
+      diagnosticLogPath: "",
+      log: ["Backup folder is empty."],
+      preview: null
+    };
+  }
+
+  const confirmation = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    buttons: ["Restore Backup", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: "Restore Mods Backup",
+    message: `Restore ${entries.length} item${entries.length === 1 ? "" : "s"} from this backup?`,
+    detail: `Source:\n${backupPath}\n\nExisting folders with the same name will be moved to:\n${overwrittenBackupRoot}`
+  });
+
+  if (confirmation.response !== 0) {
+    return {
+      ok: false,
+      canceled: true,
+      failedCount: 0,
+      failures,
+      backupRoot: "",
+      diagnosticLogPath: "",
+      log: ["Restore backup canceled."],
+      preview: null
+    };
+  }
+
+  await fsp.mkdir(modsPath, { recursive: true });
+  reportSyncProgress(onProgress, {
+    phase: "preparing",
+    message: `Preparing to restore ${entries.length} backup item${entries.length === 1 ? "" : "s"}.`,
+    current: 0,
+    total: entries.length
+  });
+
+  for (const [index, entry] of entries.entries()) {
+    const current = index + 1;
+    const sourcePath = path.join(backupPath, entry.name);
+    const targetPath = path.join(modsPath, entry.name);
+    try {
+      reportSyncProgress(onProgress, {
+        phase: "installing",
+        message: `Restoring ${entry.name}.`,
+        modName: entry.name,
+        modKey: entry.name,
+        current,
+        total: entries.length
+      });
+
+      if (await exists(targetPath)) {
+        await fsp.mkdir(overwrittenBackupRoot, { recursive: true });
+        await movePathToBackup(targetPath, getUniqueBackupTarget(overwrittenBackupRoot, sanitizeFolderName(entry.name), new Set()));
+        log.push(`Moved existing ${entry.name} to restore-overwritten backup.`);
+      }
+
+      await fsp.cp(sourcePath, targetPath, { recursive: true });
+      log.push(`Restored ${entry.name}.`);
+      reportSyncProgress(onProgress, {
+        phase: "installed",
+        message: `Restored ${entry.name}.`,
+        modName: entry.name,
+        modKey: entry.name,
+        current,
+        total: entries.length
+      });
+    } catch (error) {
+      failures.push({ modName: entry.name, error: error.message });
+      log.push(`Failed ${entry.name}: ${error.message}`);
+      reportSyncProgress(onProgress, {
+        phase: "failed",
+        message: `Failed ${entry.name}: ${error.message}`,
+        modName: entry.name,
+        modKey: entry.name,
+        current,
+        total: entries.length
+      });
+    }
+  }
+
+  await recordInstallOperation(gamePath, {
+    type: "restore-backup",
+    mode: "copy",
+    affectedCount: entries.length - failures.length,
+    failedCount: failures.length,
+    backupRoot: (await exists(overwrittenBackupRoot)) ? overwrittenBackupRoot : "",
+    sourceBackup: backupPath
+  });
+
+  reportSyncProgress(onProgress, {
+    phase: failures.length > 0 ? "failed" : "complete",
+    message: failures.length > 0 ? "Backup restore finished with issues." : "Backup restored.",
+    current: entries.length - failures.length,
+    total: entries.length
+  });
+
+  return {
+    ok: failures.length === 0,
+    failedCount: failures.length,
+    failures,
+    backupRoot: (await exists(overwrittenBackupRoot)) ? overwrittenBackupRoot : "",
+    diagnosticLogPath: failures.length > 0 ? getDiagnosticLogPath() : "",
+    log,
+    preview: null
+  };
+}
+
+async function deleteBackup(payload = {}) {
+  const gamePath = path.resolve(String(payload.gamePath || ""));
+  const backupPath = path.resolve(String(payload.backupPath || ""));
+  if (!gamePath || !(await isSevenDaysGameRoot(gamePath))) {
+    throw new Error("Select a valid 7 Days to Die folder first.");
+  }
+
+  assertManagedBackupPath(gamePath, backupPath);
+  if (!(await exists(backupPath))) {
+    return { ok: true, deleted: false, path: backupPath };
+  }
+
+  const confirmation = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    buttons: ["Delete Backup", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    title: "Delete Mods Backup",
+    message: "Permanently delete this backup?",
+    detail: backupPath
+  });
+
+  if (confirmation.response !== 0) {
+    return { ok: false, canceled: true, deleted: false, path: backupPath };
+  }
+
+  const sizeBytes = await getPathSize(backupPath).catch(() => 0);
+  await fsp.rm(backupPath, { recursive: true, force: true });
+  await recordInstallOperation(gamePath, {
+    type: "delete-backup",
+    mode: "delete",
+    affectedCount: 1,
+    failedCount: 0,
+    backupPath,
+    sizeBytes
+  });
+  return { ok: true, deleted: true, path: backupPath, sizeBytes };
+}
+
+function assertManagedBackupPath(gamePath, backupPath) {
+  const allowedRoots = getSyncWorkRoots(gamePath).map((root) => path.join(root, "backups"));
+  if (!allowedRoots.some((root) => isPathInsideOrEqual(root, backupPath))) {
+    throw new Error("Backup path is outside the GDG backup folders.");
+  }
+}
+
+function isPathInsideOrEqual(root, candidate) {
+  const resolvedRoot = path.resolve(root).toLowerCase();
+  const resolvedCandidate = path.resolve(candidate).toLowerCase();
+  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
+}
+
+function parseBackupTimestamp(value) {
+  const normalized = String(value || "").replace(/-(\d{3})Z$/, ".$1Z").replace(/^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})/, "$1T$2:$3:$4");
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+async function getPathSize(inputPath) {
+  const stats = await fsp.stat(inputPath);
+  if (stats.isFile()) {
+    return stats.size;
+  }
+
+  if (!stats.isDirectory()) {
+    return 0;
+  }
+
+  let total = 0;
+  const entries = await fsp.readdir(inputPath, { withFileTypes: true });
+  for (const entry of entries) {
+    total += await getPathSize(path.join(inputPath, entry.name));
+  }
+  return total;
 }
 
 async function loadManifest(input) {
@@ -2062,11 +3224,13 @@ async function checkServerHealth(server) {
   try {
     const manifest = await loadManifest(server.syncUrl);
     validateManifest(manifest);
+    const clientMods = (manifest.mods || []).filter(isClientInstallableManifestMod);
     return {
       serverId: server.id,
       ok: true,
       status: "online",
-      modCount: manifest.mods.length,
+      modCount: clientMods.length,
+      blockedServerOnlyCount: (manifest.mods || []).length - clientMods.length,
       generatedAt: manifest.generatedAt || "",
       serverName: manifest.server?.name || server.name,
       eacEnabled: typeof manifest.server?.eacEnabled === "boolean" ? manifest.server.eacEnabled : null,
@@ -2279,6 +3443,10 @@ function getManifestSizeSummary(manifest) {
   let missingInstalledSizes = 0;
 
   for (const mod of manifest.mods || []) {
+    if (!isClientInstallableManifestMod(mod)) {
+      continue;
+    }
+
     const archiveSize = Number(mod.source?.archiveSizeBytes || mod.source?.sizeBytes || 0);
     const folderSize = Number(mod.folderSizeBytes || 0);
 
@@ -2438,6 +3606,16 @@ function buildSyncPlan(manifest, localMods) {
       byFolder.get(desiredFolder) ||
       byName.get(String(mod.id).toLowerCase()) ||
       byName.get(String(mod.name).toLowerCase());
+    const blockedReason = getClientBlockedReason(mod);
+
+    if (blockedReason) {
+      return {
+        action: "blocked",
+        mod,
+        installed,
+        reason: blockedReason
+      };
+    }
 
     if (!installed) {
       return {
@@ -2475,7 +3653,9 @@ function buildSyncPlan(manifest, localMods) {
   });
 
   const manifestFolders = new Set(
-    manifest.mods.map((mod) => String(mod.folderName || mod.id || mod.name).toLowerCase())
+    manifest.mods
+      .filter(isClientInstallableManifestMod)
+      .map((mod) => String(mod.folderName || mod.id || mod.name).toLowerCase())
   );
   const unmanaged = localMods
     .filter((mod) => !manifestFolders.has(mod.folderName.toLowerCase()))

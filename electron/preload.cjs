@@ -20,6 +20,13 @@ contextBridge.exposeInMainWorld("gdg", {
   previewSync: (payload) => ipcRenderer.invoke("gdg:preview-sync", payload),
   applySync: (payload) => ipcRenderer.invoke("gdg:apply-sync", payload),
   cleanLocalMods: (payload) => ipcRenderer.invoke("gdg:clean-local-mods", payload),
+  purgeModsFolder: (payload) => ipcRenderer.invoke("gdg:purge-mods-folder", payload),
+  cleanManagedMods: (payload) => ipcRenderer.invoke("gdg:clean-managed-mods", payload),
+  resetAndReinstall: (payload) => ipcRenderer.invoke("gdg:reset-and-reinstall", payload),
+  runDoctor: (payload) => ipcRenderer.invoke("gdg:run-doctor", payload),
+  listBackups: (gamePath) => ipcRenderer.invoke("gdg:list-backups", { gamePath }),
+  restoreBackup: (payload) => ipcRenderer.invoke("gdg:restore-backup", payload),
+  deleteBackup: (payload) => ipcRenderer.invoke("gdg:delete-backup", payload),
   onSyncProgress: (callback) => {
     const listener = (_event, progress) => callback(progress);
     ipcRenderer.on("gdg:sync-progress", listener);

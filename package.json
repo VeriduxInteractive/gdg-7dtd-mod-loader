@@ -8,6 +8,13 @@
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:clean": "node scripts/cleanup-test-artifacts.cjs",
+    "syntax:check": "node --check electron/main.cjs && node --check shared/gdg-sync-core.cjs && node --check server/gdg-sync-server.cjs",
+    "check": "npm run test && npm run build && npm run syntax:check",
+    "verify:release": "npm run test:clean && npm run check && npm run test:coverage && npm audit --audit-level=moderate && npm run test:clean",
     "package:win": "npm run build && electron-builder --win dir",
     "package:win:portable": "npm run build && electron-builder --win portable",
     "installer:win": "npm run build && electron-builder --win nsis",
@@ -30,11 +37,13 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^4.1.7",
     "concurrently": "^9.1.0",
     "electron": "^42.0.0",
     "electron-builder": "^26.0.12",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
+    "vitest": "^4.1.7",
     "wait-on": "^8.0.1"
   },
   "build": {

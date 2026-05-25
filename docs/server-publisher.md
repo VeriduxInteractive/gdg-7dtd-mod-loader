@@ -84,6 +84,7 @@ That prevents the sync helper from accidentally being packaged as one of the gam
 
 - safest production mode
 - only folders listed in `clientMods` are packaged
+- published packages are marked with `audience: "client"` for loader-side enforcement
 - best for protecting GDG server-side logic
 
 `all-except-private`:
@@ -91,6 +92,7 @@ That prevents the sync helper from accidentally being packaged as one of the gam
 - packages every scanned mod except `serverOnlyMods`, `privateMods`, and default excludes
 - also honors `serverOnlyPrefixes` / `privatePrefixes` for families such as `Allocs_`, `GDG`, or `TFP_`
 - always blocks known server-only Allocs folders from client manifests
+- published packages are still marked with `audience: "client"`; manifests that label a package as `server` are refused by the loader
 - useful for local testing
 - riskier for production because new server mods become client-downloadable unless blocked
 

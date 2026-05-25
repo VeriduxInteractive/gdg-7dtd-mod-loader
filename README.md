@@ -11,6 +11,8 @@ The first release focuses on 7 Days to Die:
 - Read a Golden Days server manifest.
 - Compare the manifest against the player's local `Mods` folder.
 - Install or update missing client-side mod packages.
+- Block server-only manifest entries from client install and track GDG-managed mods locally.
+- Repair, purge, back up, restore, or permanently delete mods from the selected install.
 - Back up replaced mods before changing anything.
 
 The long-term design is server-driven. A GDG server-side sync publisher should scan the server's installed mods, generate the manifest automatically, and expose it to the client. The player-facing client should stay simple: detect GDG sync, compare files, install what is needed, and get out of the way for non-GDG servers.

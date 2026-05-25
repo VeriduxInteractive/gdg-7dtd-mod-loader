@@ -29,9 +29,11 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ApplyResult,
+  BackupEntry,
   CloneGameResult,
   DetectedGame,
   DiskSpace,
+  DoctorResult,
   DirectoryServer,
   GameVersionInfo,
   LoaderConfig,
@@ -66,6 +68,8 @@ function App() {
   const [preview, setPreview] = useState<SyncPreview | null>(null);
   const [applyResult, setApplyResult] = useState<ApplyResult | null>(null);
   const [supportBundle, setSupportBundle] = useState<{ path: string; folderPath: string; fileName: string } | null>(null);
+  const [doctor, setDoctor] = useState<DoctorResult | null>(null);
+  const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [serverDirectory, setServerDirectory] = useState<ServerDirectory | null>(null);
   const [serverHealth, setServerHealth] = useState<Record<string, ServerHealth>>({});
   const [diskSpace, setDiskSpace] = useState<DiskSpace | null>(null);
@@ -219,6 +223,34 @@ function App() {
     };
   }, [config.gamePath]);
 
+  useEffect(() => {
+    let canceled = false;
+
+    async function loadBackups() {
+      if (!config.gamePath) {
+        setBackups([]);
+        return;
+      }
+
+      try {
+        const result = await window.gdg.listBackups(config.gamePath);
+        if (!canceled) {
+          setBackups(result.backups || []);
+        }
+      } catch {
+        if (!canceled) {
+          setBackups([]);
+        }
+      }
+    }
+
+    void loadBackups();
+
+    return () => {
+      canceled = true;
+    };
+  }, [config.gamePath]);
+
   const nextAction = useMemo(() => {
     if (!preview) {
       return "Check mods";
@@ -306,6 +338,7 @@ function App() {
     setPreview(null);
     setApplyResult(null);
     setScan(null);
+    setDoctor(null);
     if (clearProgress) {
       setSyncProgress(null);
     }
@@ -480,6 +513,33 @@ function App() {
     });
   }
 
+  async function refreshBackups() {
+    if (!config.gamePath) {
+      setBackups([]);
+      return;
+    }
+
+    const result = await window.gdg.listBackups(config.gamePath);
+    setBackups(result.backups || []);
+  }
+
+  async function runPreflightDoctor() {
+    await runTask("Running doctor", async () => {
+      const result = await window.gdg.runDoctor({
+        gamePath: config.gamePath,
+        manifestInput: config.manifestInput,
+        launchWithEac: config.launchWithEac
+      });
+      setDoctor(result);
+      if (result.preview) {
+        setPreview(result.preview);
+        setScan(result.preview.local);
+      }
+      setOpenStep(result.ok ? "install" : "check");
+      return result.ok ? "Preflight checks passed" : "Preflight needs attention";
+    });
+  }
+
   async function previewSync() {
     setSyncProgress({
       phase: "scanning",
@@ -498,6 +558,12 @@ function App() {
       setPreview(result);
       setScan(result.local);
       setApplyResult(null);
+      const doctorResult = await window.gdg.runDoctor({
+        gamePath: config.gamePath,
+        manifestInput: config.manifestInput,
+        launchWithEac: config.launchWithEac
+      });
+      setDoctor(doctorResult);
       setActiveTab("sync");
       if (result.gameCompatibility.checked && !result.gameCompatibility.ok) {
         const promptKey = `${config.gamePath}|${config.manifestInput}|${result.gameCompatibility.reason}`;
@@ -551,6 +617,7 @@ function App() {
         setPreview(result.preview);
         setScan(result.preview.local);
       }
+      await refreshBackups();
       setActiveTab("sync");
       if (!result.ok) {
         setError(`${result.failedCount || 1} mod install${result.failedCount === 1 ? "" : "s"} failed. Check the sync log below.`);
@@ -585,6 +652,7 @@ function App() {
         setPreview(result.preview);
         setScan(result.preview.local);
       }
+      await refreshBackups();
       setActiveTab("sync");
       if (!result.ok) {
         setError(`${result.failedCount || 1} mod repair${result.failedCount === 1 ? "" : "s"} failed. Check the sync log below.`);
@@ -612,6 +680,7 @@ function App() {
         setPreview(result.preview);
         setScan(result.preview.local);
       }
+      await refreshBackups();
       setActiveTab("sync");
 
       if (result.canceled) {
@@ -623,6 +692,185 @@ function App() {
       } else {
         setMessage("Local-only mods moved to backup");
       }
+    });
+  }
+
+  async function purgeModsFolder(mode: "backup" | "delete") {
+    setSyncProgress({
+      phase: "preparing",
+      message: mode === "delete" ? "Preparing to delete all mods." : "Preparing to move all mods to backup.",
+      current: 0,
+      total: Math.max(scan?.mods.length || 0, 1),
+      percent: 0
+    });
+
+    await runTask(mode === "delete" ? "Deleting all mods" : "Backing up all mods", async () => {
+      const result = await window.gdg.purgeModsFolder({
+        gamePath: config.gamePath,
+        manifestInput: config.manifestInput,
+        mode
+      });
+      setApplyResult(result);
+
+      if (result.preview) {
+        setPreview(result.preview);
+        setScan(result.preview.local);
+        setActiveTab("sync");
+      } else {
+        const nextScan = await window.gdg.scanMods(config.gamePath);
+        setScan(nextScan);
+        setPreview(null);
+        setActiveTab("installed");
+      }
+      await refreshBackups();
+
+      if (result.canceled) {
+        return "Purge canceled";
+      }
+
+      if (!result.ok) {
+        setError(`${result.failedCount || 1} Mods folder item${result.failedCount === 1 ? "" : "s"} could not be ${mode === "delete" ? "deleted" : "moved"}. Check the log below.`);
+        return "Needs attention";
+      }
+
+      if (result.backupRoot) {
+        return "Mods moved to backup. Install missing mods to redownload.";
+      }
+
+      return result.log.some((line) => line.startsWith("Deleted "))
+        ? "Mods deleted. Install missing mods to redownload."
+        : "Mods folder is already empty.";
+    });
+  }
+
+  async function cleanManagedMods(mode: "backup" | "delete", scope: "all" | "extra" = "all") {
+    const expected = scope === "extra" ? managedExtraMods : managedOrServerOnlyMods;
+    setSyncProgress({
+      phase: "preparing",
+      message: mode === "delete" ? "Preparing to delete GDG-managed mods." : "Preparing to move GDG-managed mods to backup.",
+      current: 0,
+      total: Math.max(expected, 1),
+      percent: 0
+    });
+
+    await runTask(mode === "delete" ? "Deleting managed mods" : "Backing up managed mods", async () => {
+      const result = await window.gdg.cleanManagedMods({
+        gamePath: config.gamePath,
+        manifestInput: config.manifestInput,
+        mode,
+        scope
+      });
+      setApplyResult(result);
+      if (result.preview) {
+        setPreview(result.preview);
+        setScan(result.preview.local);
+      } else {
+        const nextScan = await window.gdg.scanMods(config.gamePath);
+        setScan(nextScan);
+      }
+      await refreshBackups();
+      setActiveTab("sync");
+
+      if (result.canceled) {
+        return "Managed cleanup canceled";
+      }
+
+      if (!result.ok) {
+        setError(`${result.failedCount || 1} managed mod${result.failedCount === 1 ? "" : "s"} could not be ${mode === "delete" ? "deleted" : "moved"}. Check the log below.`);
+        return "Needs attention";
+      }
+
+      return mode === "delete" ? "GDG-managed mods deleted" : "GDG-managed mods moved to backup";
+    });
+  }
+
+  async function resetAndReinstall(mode: "backup" | "delete") {
+    setLivePlanStatuses({});
+    setSyncProgress({
+      phase: "preparing",
+      message: mode === "delete" ? "Preparing to delete all mods and reinstall." : "Preparing to back up all mods and reinstall.",
+      current: 0,
+      total: Math.max((scan?.mods.length || 0) + (preview?.manifest.mods.length || 0), 1),
+      percent: 0
+    });
+
+    await runTask(mode === "delete" ? "Deleting and reinstalling" : "Backing up and reinstalling", async () => {
+      const result = await window.gdg.resetAndReinstall({
+        gamePath: config.gamePath,
+        manifestInput: config.manifestInput,
+        mode
+      });
+      setApplyResult(result);
+      if (result.preview) {
+        setPreview(result.preview);
+        setScan(result.preview.local);
+      }
+      await refreshBackups();
+      setActiveTab("sync");
+
+      if (result.canceled) {
+        return "Reset canceled";
+      }
+
+      if (!result.ok) {
+        setError(`${result.failedCount || 1} reset/reinstall step${result.failedCount === 1 ? "" : "s"} failed. Check the log below.`);
+        return "Needs attention";
+      }
+
+      return "Mods reset and reinstalled";
+    });
+  }
+
+  async function restoreBackup(backup: BackupEntry) {
+    setSyncProgress({
+      phase: "preparing",
+      message: "Preparing to restore backup.",
+      current: 0,
+      total: Math.max(backup.itemCount, 1),
+      percent: 0
+    });
+
+    await runTask("Restoring backup", async () => {
+      const result = await window.gdg.restoreBackup({
+        gamePath: config.gamePath,
+        backupPath: backup.path
+      });
+      setApplyResult(result);
+      const nextScan = await window.gdg.scanMods(config.gamePath);
+      setScan(nextScan);
+      await refreshBackups();
+      setActiveTab("installed");
+
+      if (result.canceled) {
+        return "Restore canceled";
+      }
+
+      if (!result.ok) {
+        setError(`${result.failedCount || 1} backup item${result.failedCount === 1 ? "" : "s"} could not be restored. Check the log below.`);
+        return "Needs attention";
+      }
+
+      return "Backup restored";
+    });
+  }
+
+  async function deleteBackup(backup: BackupEntry) {
+    await runTask("Deleting backup", async () => {
+      const result = await window.gdg.deleteBackup({
+        gamePath: config.gamePath,
+        backupPath: backup.path
+      });
+      await refreshBackups();
+
+      if (result.canceled) {
+        return "Backup delete canceled";
+      }
+
+      if (!result.ok) {
+        throw new Error("Backup could not be deleted.");
+      }
+
+      return result.deleted ? "Backup deleted" : "Backup already gone";
     });
   }
 
@@ -797,6 +1045,17 @@ function App() {
       : "No DLL mods detected in the selected install.";
   const serverEacLabel = typeof serverEacEnabled === "boolean" ? (serverEacEnabled ? "On" : "Off") : "Unknown";
   const localOnlyMods = preview?.summary.keep || 0;
+  const managedInstalledMods = currentScan ? currentScan.mods.filter((mod) => mod.managed) : [];
+  const serverOnlyInstalledMods = currentScan ? currentScan.mods.filter((mod) => mod.serverOnly) : [];
+  const managedOrServerOnlyMods = new Set([
+    ...managedInstalledMods.map((mod) => mod.folderName.toLowerCase()),
+    ...serverOnlyInstalledMods.map((mod) => mod.folderName.toLowerCase())
+  ]).size;
+  const managedExtraMods = preview?.managedSummary?.extra || serverOnlyInstalledMods.length;
+  const skippedServerOnlyMods = preview?.skippedServerOnly?.length || 0;
+  const doctorFailures = doctor?.checks.filter((check) => check.status === "fail").length || 0;
+  const doctorWarnings = doctor?.checks.filter((check) => check.status === "warn").length || 0;
+  const backupTotalBytes = backups.reduce((total, backup) => total + (backup.sizeBytes || 0), 0);
   const visibleServers = serverDirectory?.servers || [];
   const onlineServerCount = visibleServers.filter((server) => serverHealth[server.id]?.ok).length;
   const setupStepState = config.gamePath ? "done" : "active";
@@ -1112,6 +1371,12 @@ function App() {
                           </button>
                         )}
                         {gameVersionMismatch && (
+                          <button className="secondary slim" type="button" onClick={previewSync} disabled={working || !config.gamePath || !config.manifestInput}>
+                            <ListChecks size={16} />
+                            Retry
+                          </button>
+                        )}
+                        {gameVersionMismatch && (
                           <div className="steam-update-help">
                             <strong>Steam controls game updates.</strong>
                             <ol>
@@ -1124,6 +1389,8 @@ function App() {
                         )}
                       </div>
                     )}
+
+                    <DoctorPanel result={doctor} failures={doctorFailures} warnings={doctorWarnings} onRun={runPreflightDoctor} disabled={working || !config.gamePath} />
 
                     <label>
                       <span>Server sync endpoint</span>
@@ -1180,6 +1447,33 @@ function App() {
                         </span>
                       </div>
                     )}
+                    {skippedServerOnlyMods > 0 && (
+                      <div className="local-only-warning danger">
+                        <AlertTriangle size={18} />
+                        <span>
+                          <strong>{skippedServerOnlyMods} server-only manifest entr{skippedServerOnlyMods === 1 ? "y" : "ies"} blocked</strong>
+                          <small>GDG refused to install those entries on this client. Republish the server manifest so only client/shared mods are listed.</small>
+                        </span>
+                      </div>
+                    )}
+                    {serverOnlyInstalledMods.length > 0 && (
+                      <div className="local-only-warning danger">
+                        <AlertTriangle size={18} />
+                        <span>
+                          <strong>{serverOnlyInstalledMods.length} server-only mod{serverOnlyInstalledMods.length === 1 ? "" : "s"} installed locally</strong>
+                          <small>{serverOnlyInstalledMods.map((mod) => mod.folderName).join(", ")}</small>
+                        </span>
+                      </div>
+                    )}
+                    {managedExtraMods > 0 && (
+                      <div className="local-only-warning">
+                        <AlertTriangle size={18} />
+                        <span>
+                          <strong>{managedExtraMods} extra GDG-managed mod{managedExtraMods === 1 ? "" : "s"}</strong>
+                          <small>These were installed by GDG before but are not part of the selected server package.</small>
+                        </span>
+                      </div>
+                    )}
                     {gameVersionMismatch && (
                       <div className="local-only-warning danger">
                         <AlertTriangle size={18} />
@@ -1220,9 +1514,21 @@ function App() {
                         <Trash2 size={17} />
                         Delete Local-Only
                       </button>
+                      <button className="secondary" type="button" onClick={() => void cleanManagedMods("backup", "extra")} disabled={working || !preview || managedExtraMods === 0}>
+                        <HardDrive size={17} />
+                        Move Extra Managed
+                      </button>
+                      <button className="secondary danger" type="button" onClick={() => void cleanManagedMods("delete", "extra")} disabled={working || !preview || managedExtraMods === 0}>
+                        <Trash2 size={17} />
+                        Delete Extra Managed
+                      </button>
                       <button className="secondary" type="button" onClick={repairSync} disabled={working || !preview || gameVersionMismatch || Boolean(preview.summary.blocked) || repairableMods === 0 || repairSpaceBlocked}>
                         <Wrench size={17} />
-                        {gameVersionMismatch ? "Update Game First" : repairSpaceBlocked ? "Need Space to Repair" : "Repair Selected Folder"}
+                        {gameVersionMismatch ? "Update Game First" : repairSpaceBlocked ? "Need Space to Repair" : "Reinstall Server Mods"}
+                      </button>
+                      <button className="secondary danger" type="button" onClick={() => void resetAndReinstall("delete")} disabled={working || !preview || gameVersionMismatch || repairSpaceBlocked}>
+                        <Trash2 size={17} />
+                        {gameVersionMismatch ? "Update Game First" : "Delete + Reinstall"}
                       </button>
                       <button className="primary" type="button" onClick={applySync} disabled={working || !preview || gameVersionMismatch || Boolean(preview.summary.blocked) || modsToInstall === 0 || syncSpaceBlocked}>
                         <Download size={17} />
@@ -1291,6 +1597,7 @@ function App() {
                 <Metric label="Install" value={preview?.summary.install || 0} tone="blue" />
                 <Metric label="Update" value={preview?.summary.update || 0} tone="amber" />
                 <Metric label="Local only" value={preview?.summary.keep || 0} tone="violet" />
+                <Metric label="Managed" value={preview?.managedSummary?.installed || managedInstalledMods.length} tone="green" />
                 <Metric label="Blocked" value={preview?.summary.blocked || 0} tone="red" />
               </div>
               <div className="storage-grid">
@@ -1371,6 +1678,22 @@ function App() {
                   <RefreshCw size={16} />
                   Scan
                 </button>
+                <button className="secondary slim" type="button" onClick={() => void purgeModsFolder("backup")} disabled={working || !config.gamePath}>
+                  <HardDrive size={16} />
+                  Backup Mods
+                </button>
+                <button className="secondary danger slim" type="button" onClick={() => void purgeModsFolder("delete")} disabled={working || !config.gamePath}>
+                  <Trash2 size={16} />
+                  Delete Mods
+                </button>
+                <button className="secondary slim" type="button" onClick={() => void cleanManagedMods("backup", "all")} disabled={working || !config.gamePath || managedOrServerOnlyMods === 0}>
+                  <HardDrive size={16} />
+                  Backup Managed
+                </button>
+                <button className="secondary danger slim" type="button" onClick={() => void cleanManagedMods("delete", "all")} disabled={working || !config.gamePath || managedOrServerOnlyMods === 0}>
+                  <Trash2 size={16} />
+                  Delete Managed
+                </button>
               </div>
             </div>
 
@@ -1382,13 +1705,50 @@ function App() {
                   </div>
                   <div>
                     <strong>{mod.displayName}</strong>
-                    <span>{mod.folderName}</span>
+                    <span>{mod.folderName}{mod.managed ? " - GDG managed" : ""}{mod.serverOnly ? " - server-only" : ""}</span>
                   </div>
                   <small>{mod.hasDll ? `${mod.version || "No version"} - DLL` : mod.version || "No version"}</small>
                 </article>
               ))}
               {!scan && <EmptyState icon={<HardDrive size={22} />} title="No scan yet" value="Local mods" />}
               {scan && scan.mods.length === 0 && <EmptyState icon={<HardDrive size={22} />} title="Empty Mods folder" value={scan.modsPath} />}
+            </div>
+
+            <div className="backup-manager">
+              <div className="backup-heading">
+                <span>
+                  <strong>Backups</strong>
+                  <small>{backups.length} backup{backups.length === 1 ? "" : "s"} - {formatBytes(backupTotalBytes)}</small>
+                </span>
+                <button className="secondary slim" type="button" onClick={() => void refreshBackups()} disabled={!config.gamePath || working}>
+                  <RefreshCw size={16} />
+                  Refresh
+                </button>
+              </div>
+              <div className="backup-list">
+                {backups.map((backup) => (
+                  <article className="backup-row" key={backup.path}>
+                    <Archive size={17} />
+                    <span>
+                      <strong>{backup.name}</strong>
+                      <small>{formatDate(backup.createdAt)} - {backup.itemCount} item{backup.itemCount === 1 ? "" : "s"} - {formatBytes(backup.sizeBytes)}{backup.legacy ? " - legacy location" : ""}</small>
+                    </span>
+                    <button className="secondary slim" type="button" onClick={() => void window.gdg.openPath(backup.path)}>
+                      <FolderOpen size={16} />
+                      Open
+                    </button>
+                    <button className="secondary slim" type="button" onClick={() => void restoreBackup(backup)} disabled={working || !config.gamePath}>
+                      <RotateCcw size={16} />
+                      Restore
+                    </button>
+                    <button className="secondary danger slim" type="button" onClick={() => void deleteBackup(backup)} disabled={working || !config.gamePath}>
+                      <Trash2 size={16} />
+                      Delete
+                    </button>
+                  </article>
+                ))}
+                {backups.length === 0 && <EmptyState icon={<Archive size={22} />} title="No backups found" value="Backups appear after updates, cleanup, or purge actions." />}
+              </div>
             </div>
           </section>
         )}
@@ -1443,7 +1803,11 @@ function App() {
               <SettingItem label="Server EAC" value={serverEacLabel} />
               <SettingItem label="Launch EAC" value={config.launchWithEac ? "On" : "Off"} />
               <SettingItem label="DLL mod warning" value={hasDllMods ? `${dllMods.length} mod${dllMods.length === 1 ? "" : "s"} detected` : scanMatchesGame ? "No DLL mods detected" : "Checking"} />
+              <SettingItem label="GDG-managed mods" value={`${managedInstalledMods.length} installed`} />
+              <SettingItem label="Server-only local mods" value={`${serverOnlyInstalledMods.length} detected`} />
+              <SettingItem label="Preflight doctor" value={doctor ? `${doctorFailures} fail / ${doctorWarnings} warn` : "Not run"} />
               <SettingItem label="Free disk space" value={diskSpace ? `${formatBytes(diskSpace.freeBytes)} free of ${formatBytes(diskSpace.totalBytes)}` : "Unknown"} />
+              <SettingItem label="Backup storage" value={`${backups.length} backups / ${formatBytes(backupTotalBytes)}`} />
               <SettingItem label="Selected server mods" value={serverSize.known ? formatBytes(serverSize.bytes) : "Unknown"} />
               <SettingItem label="Selected sync endpoint" value={config.manifestInput || "Not set"} />
               <SettingItem label="Server directory" value={config.serverDirectoryInput || "Built-in sample"} />
@@ -1513,6 +1877,49 @@ function StorageStat({ icon, label, value, tone }: { icon: React.ReactNode; labe
       {icon}
       <span>{label}</span>
       <strong>{value}</strong>
+    </div>
+  );
+}
+
+function DoctorPanel({
+  result,
+  failures,
+  warnings,
+  onRun,
+  disabled
+}: {
+  result: DoctorResult | null;
+  failures: number;
+  warnings: number;
+  onRun: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className={`doctor-panel ${result ? (result.ok ? "ok" : "warn") : ""}`}>
+      <div className="doctor-heading">
+        <ListChecks size={18} />
+        <span>
+          <strong>{result ? (result.ok ? "Preflight ready" : "Preflight needs attention") : "Preflight doctor"}</strong>
+          <small>{result ? `${failures} fail / ${warnings} warn / ${result.checks.length} checks` : "Folder, version, space, EAC, and server-only checks"}</small>
+        </span>
+        <button className="secondary slim" type="button" onClick={onRun} disabled={disabled}>
+          <RefreshCw size={16} />
+          Run
+        </button>
+      </div>
+      {result && (
+        <div className="doctor-checks">
+          {result.checks.map((check) => (
+            <div className={`doctor-check ${check.status}`} key={check.id}>
+              {check.status === "pass" ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+              <span>
+                <strong>{check.label}</strong>
+                <small>{check.detail}{check.action ? ` ${check.action}` : ""}</small>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1731,6 +2138,24 @@ function getProgressTitle(progress: SyncProgress) {
   }
 
   const message = progress.message.toLowerCase();
+  if (message.includes("all mods") || message.includes("mods folder")) {
+    if (progress.phase === "complete") {
+      return message.includes("deleted") ? "Mods deleted" : "Mods moved";
+    }
+    return message.includes("delete") || message.includes("deleting") ? "Deleting mods" : "Moving mods";
+  }
+
+  if (message.includes("gdg-managed") || message.includes("managed mod")) {
+    if (progress.phase === "complete") {
+      return message.includes("deleted") ? "Managed mods deleted" : "Managed mods moved";
+    }
+    return message.includes("delete") || message.includes("deleting") ? "Deleting managed mods" : "Moving managed mods";
+  }
+
+  if (message.includes("restore")) {
+    return progress.phase === "complete" ? "Backup restored" : "Restoring backup";
+  }
+
   if (message.includes("local-only") || message.includes("moving") || message.includes("deleting")) {
     if (progress.phase === "complete") {
       return message.includes("deleted") ? "Local-only mods deleted" : "Local-only mods moved";
