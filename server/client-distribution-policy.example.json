@@ -10,9 +10,13 @@
     "GDG-Economy",
     "GDG-Progression",
     "PrismaCore",
+    "Allocs_CommandExtensions",
+    "Allocs_WebAndMapRendering",
+    "Allocs_CommonFunc",
     "0_TFP_Harmony"
   ],
   "serverOnlyPrefixes": [
+    "Allocs_",
     "GDG",
     "TFP_"
   ],

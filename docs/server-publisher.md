@@ -89,7 +89,8 @@ That prevents the sync helper from accidentally being packaged as one of the gam
 `all-except-private`:
 
 - packages every scanned mod except `serverOnlyMods`, `privateMods`, and default excludes
-- also honors `serverOnlyPrefixes` / `privatePrefixes` for families such as `GDG` or `TFP_`
+- also honors `serverOnlyPrefixes` / `privatePrefixes` for families such as `Allocs_`, `GDG`, or `TFP_`
+- always blocks known server-only Allocs folders from client manifests
 - useful for local testing
 - riskier for production because new server mods become client-downloadable unless blocked
 
@@ -100,7 +101,7 @@ Some required client mods may not be installed on the dedicated server. Put thos
 Example:
 
 ```bash
-npm run server:publish -- --game-root "D:\7dtd-server" --distribution all-except-private --private-prefixes "GDG,TFP_" --private-mods "PrismaCore,0_TFP_Harmony" --extra-client-mods "D:\gdg-client-mods\GDGClient"
+npm run server:publish -- --game-root "D:\7dtd-server" --distribution all-except-private --private-prefixes "Allocs_,GDG,TFP_" --private-mods "PrismaCore,Allocs_CommandExtensions,Allocs_WebAndMapRendering,Allocs_CommonFunc,0_TFP_Harmony" --extra-client-mods "D:\gdg-client-mods\GDGClient"
 ```
 
 If the client-only mod is already hosted as a release zip, add it as `extraClientPackages` in the policy file. You can either provide a fixed `url`, `version`, and `archiveSha256`, or point at a GitHub release:

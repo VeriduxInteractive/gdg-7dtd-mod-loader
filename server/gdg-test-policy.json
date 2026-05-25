@@ -2,11 +2,15 @@
   "distribution": "all-except-private",
   "serverOnlyMods": [
     "PrismaCore",
+    "Allocs_CommandExtensions",
+    "Allocs_WebAndMapRendering",
+    "Allocs_CommonFunc",
     "TFP_CommandExtensions",
     "TFP_MapRendering",
     "TFP_WebServer"
   ],
   "serverOnlyPrefixes": [
+    "Allocs_",
     "GDG"
   ],
   "extraClientPackages": [

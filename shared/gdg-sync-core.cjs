@@ -4,6 +4,21 @@ const path = require("node:path");
 
 const GAME_ID = "7dtd";
 const MANIFEST_VERSION = 1;
+const CLIENT_BLOCKED_SERVER_ONLY_MOD_NAMES = new Set([
+  "allocs_commandextensions",
+  "allocs-commandextensions",
+  "allocs-command-extensions",
+  "allocs command extensions",
+  "allocs_webandmaprendering",
+  "allocs-webandmaprendering",
+  "allocs-web-and-map-rendering",
+  "allocs maprendering and webinterface",
+  "allocs_commonfunc",
+  "allocs-commonfunc",
+  "allocs-common-func",
+  "allocs server fixes"
+]);
+const CLIENT_BLOCKED_SERVER_ONLY_MOD_PREFIXES = ["allocs_", "allocs-", "allocs "];
 
 async function scanSevenDaysMods(gameRoot, options = {}) {
   const modsPath = options.modsPath || path.join(gameRoot, "Mods");
@@ -88,6 +103,15 @@ function buildSyncPlan(manifest, localMods) {
       byName.get(String(mod.id).toLowerCase()) ||
       byName.get(String(mod.name).toLowerCase());
 
+    if (isClientBlockedServerOnlyMod(mod)) {
+      return {
+        action: "blocked",
+        mod,
+        installed,
+        reason: "Server-only mod was published by mistake; GDG will not install it on clients"
+      };
+    }
+
     if (!installed) {
       return {
         action: mod.source ? "install" : "blocked",
@@ -124,7 +148,9 @@ function buildSyncPlan(manifest, localMods) {
   });
 
   const manifestFolders = new Set(
-    manifest.mods.map((mod) => String(mod.folderName || mod.id || mod.name).toLowerCase())
+    manifest.mods
+      .filter((mod) => !isClientBlockedServerOnlyMod(mod))
+      .map((mod) => String(mod.folderName || mod.id || mod.name).toLowerCase())
   );
   const unmanaged = localMods
     .filter((mod) => !manifestFolders.has(mod.folderName.toLowerCase()))
@@ -141,6 +167,32 @@ function buildSyncPlan(manifest, localMods) {
     }));
 
   return [...plan, ...unmanaged];
+}
+
+function isClientBlockedServerOnlyMod(mod) {
+  const candidates = getModKeyCandidates(mod);
+  return candidates.some((candidate) => {
+    const normalized = normalizeModKey(candidate);
+    return CLIENT_BLOCKED_SERVER_ONLY_MOD_NAMES.has(normalized) ||
+      CLIENT_BLOCKED_SERVER_ONLY_MOD_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+  });
+}
+
+function getModKeyCandidates(mod) {
+  return [
+    mod?.id,
+    mod?.folderName,
+    mod?.name,
+    mod?.displayName,
+    slugify(mod?.id),
+    slugify(mod?.folderName),
+    slugify(mod?.name),
+    slugify(mod?.displayName)
+  ].filter(Boolean);
+}
+
+function normalizeModKey(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function summarizePlan(plan) {
@@ -267,10 +319,10 @@ module.exports = {
   exists,
   hashDirectory,
   hashFile,
+  isClientBlockedServerOnlyMod,
   parseModInfo,
   scanSevenDaysMods,
   slugify,
   summarizePlan,
   validateManifest
 };
-

@@ -10,6 +10,7 @@ const {
   exists,
   hashDirectory,
   hashFile,
+  isClientBlockedServerOnlyMod,
   parseModInfo,
   scanSevenDaysMods,
   slugify,
@@ -762,6 +763,10 @@ function filterPublishableMods(mods, policy) {
   const blockPrefixes = policy.serverOnlyPrefixes.map(normalizeModKey).filter(Boolean);
 
   return mods.filter((mod) => {
+    if (isClientBlockedServerOnlyMod(mod)) {
+      return false;
+    }
+
     if (modMatches(mod, blocklist) || modMatchesPrefix(mod, blockPrefixes)) {
       return false;
     }

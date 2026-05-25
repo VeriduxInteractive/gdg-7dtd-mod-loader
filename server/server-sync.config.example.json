@@ -12,8 +12,8 @@
   "exclude": "GDGSyncClient,GDGSyncServer",
   "distribution": "allowlist",
   "clientMods": ["GDG-UI", "GDG-Icons", "GDG-Asset-Pack"],
-  "serverOnlyMods": ["GDG-Core", "GDG-Economy", "GDG-Progression", "PrismaCore", "0_TFP_Harmony"],
-  "serverOnlyPrefixes": ["GDG", "TFP_"],
+  "serverOnlyMods": ["GDG-Core", "GDG-Economy", "GDG-Progression", "PrismaCore", "Allocs_CommandExtensions", "Allocs_WebAndMapRendering", "Allocs_CommonFunc", "0_TFP_Harmony"],
+  "serverOnlyPrefixes": ["Allocs_", "GDG", "TFP_"],
   "extraClientMods": ["/path/to/gdg-sync/client-mods/GDGClient"],
   "extraClientPackages": [
     {
