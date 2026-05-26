@@ -299,10 +299,21 @@ button:disabled {
 }
 
 .health-panel {
+  gap: 12px;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.035);
+}
+
+.health-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.health-panel .section-label {
+  margin-bottom: 0;
 }
 
 .sidebar-launch-panel {
@@ -359,23 +370,62 @@ button:disabled {
   box-shadow: none;
 }
 
+.status-group {
+  display: grid;
+  gap: 8px;
+  padding-top: 11px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.health-panel-header + .status-group {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.status-group-title {
+  color: var(--gold-2);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
 .status-row {
   display: grid;
-  grid-template-columns: 20px 1fr auto;
+  grid-template-columns: 20px minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
-  min-height: 32px;
+  gap: 9px;
+  min-height: 34px;
 }
 
 .status-row svg {
   color: var(--gold-2);
 }
 
+.status-icon {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+}
+
+.status-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.status-copy > span {
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .status-row strong {
-  max-width: 112px;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   color: #fff7df;
   font-size: 13px;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1402,6 +1452,33 @@ input:focus {
   gap: 10px;
 }
 
+.server-match-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.server-match-heading .section-label {
+  margin-bottom: 0;
+}
+
+.filter-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(217, 165, 54, 0.28);
+  border-radius: 8px;
+  color: var(--gold-2);
+  background: rgba(217, 165, 54, 0.08);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 900;
+}
+
 .storage-grid {
   display: grid;
   gap: 10px;
@@ -1415,6 +1492,9 @@ input:focus {
   padding: 14px;
   border: 1px solid transparent;
   border-radius: 8px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .metric span {
@@ -1425,6 +1505,19 @@ input:focus {
 .metric strong {
   font-size: 30px;
   line-height: 1;
+}
+
+.metric:not(:disabled):hover,
+.metric.active {
+  border-color: rgba(255, 247, 223, 0.44);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 0 0 2px rgba(217, 165, 54, 0.13);
+}
+
+.metric:disabled {
+  cursor: default;
+  opacity: 0.68;
 }
 
 .metric.green {
@@ -1497,6 +1590,90 @@ input:focus {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.plan-filter-bar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 8px;
+  margin: -4px 0 16px;
+}
+
+.plan-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.035);
+  font: inherit;
+  cursor: pointer;
+}
+
+.plan-filter span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 900;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-filter strong {
+  color: #fff7df;
+  font-size: 13px;
+}
+
+.plan-filter.neutral {
+  color: var(--ink);
+}
+
+.plan-filter.green {
+  color: var(--green);
+  background: rgba(66, 209, 154, 0.08);
+}
+
+.plan-filter.blue {
+  color: var(--blue);
+  background: rgba(98, 168, 255, 0.08);
+}
+
+.plan-filter.amber {
+  color: var(--amber);
+  background: rgba(240, 180, 75, 0.08);
+}
+
+.plan-filter.violet {
+  color: var(--violet);
+  background: rgba(182, 149, 255, 0.08);
+}
+
+.plan-filter.red {
+  color: var(--red);
+  background: rgba(255, 107, 107, 0.08);
+}
+
+.plan-filter.active,
+.plan-filter:not(:disabled):hover,
+.filter-clear:hover {
+  border-color: rgba(255, 247, 223, 0.38);
+  color: #fff7df;
+  box-shadow: 0 0 0 2px rgba(217, 165, 54, 0.12);
+}
+
+.plan-filter:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.plan-filter.clear {
+  justify-content: center;
+  color: var(--gold-2);
+  background: rgba(217, 165, 54, 0.08);
 }
 
 .doctor-panel {
@@ -2075,7 +2252,7 @@ input:focus {
   }
 
   .metric-grid {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .sync-progress-details {
@@ -2128,7 +2305,7 @@ input:focus {
   }
 
   .metric-grid {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -2148,7 +2325,7 @@ input:focus {
   }
 
   .health-panel {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: 1fr;
   }
 
   .metric-grid {

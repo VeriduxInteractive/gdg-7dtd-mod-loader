@@ -40,6 +40,7 @@ import type {
   ScanResult,
   ServerDirectory,
   ServerHealth,
+  SyncAction,
   SyncPlanItem,
   SyncPreview,
   SyncProgress
@@ -60,6 +61,7 @@ const sampleSyncEndpoint = "http://40.160.20.5:8787/gdg-sync/manifest.json";
 type Tab = "sync" | "installed" | "settings";
 type LivePlanStatus = "active" | "ready" | "failed";
 type GuidedStepId = "setup" | "check" | "install" | "launch";
+type PlanFilter = "all" | SyncAction | "managed";
 
 function App() {
   const [config, setConfig] = useState<LoaderConfig>(emptyConfig);
@@ -83,6 +85,7 @@ function App() {
   const [error, setError] = useState("");
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [livePlanStatuses, setLivePlanStatuses] = useState<Record<string, LivePlanStatus>>({});
+  const [planFilter, setPlanFilter] = useState<PlanFilter>("all");
   const [openStep, setOpenStep] = useState<GuidedStepId | "">("setup");
   const progressPanelRef = useRef<HTMLElement | null>(null);
   const lastAutoScrolledProgressKey = useRef("");
@@ -339,6 +342,7 @@ function App() {
     setApplyResult(null);
     setScan(null);
     setDoctor(null);
+    setPlanFilter("all");
     if (clearProgress) {
       setSyncProgress(null);
     }
@@ -393,6 +397,7 @@ function App() {
     });
     setPreview(null);
     setApplyResult(null);
+    setPlanFilter("all");
     setActiveTab("sync");
   }
 
@@ -720,6 +725,7 @@ function App() {
         const nextScan = await window.gdg.scanMods(config.gamePath);
         setScan(nextScan);
         setPreview(null);
+        setPlanFilter("all");
         setActiveTab("installed");
       }
       await refreshBackups();
@@ -1046,6 +1052,33 @@ function App() {
   const serverEacLabel = typeof serverEacEnabled === "boolean" ? (serverEacEnabled ? "On" : "Off") : "Unknown";
   const localOnlyMods = preview?.summary.keep || 0;
   const managedInstalledMods = currentScan ? currentScan.mods.filter((mod) => mod.managed) : [];
+  const planItems = preview?.plan || [];
+  const managedPlanItems = planItems.filter((item) => Boolean(item.installed?.managed || item.installed?.managedRecord));
+  const managedPlanCount = preview ? managedPlanItems.length : managedInstalledMods.length;
+  const planFilterOptions: Array<{ id: Exclude<PlanFilter, "all">; label: string; count: number; tone: string }> = [
+    { id: "ready", label: "Server ready", count: preview?.summary.ready || 0, tone: "green" },
+    { id: "install", label: "Install", count: preview?.summary.install || 0, tone: "blue" },
+    { id: "update", label: "Update", count: preview?.summary.update || 0, tone: "amber" },
+    { id: "keep", label: "Local only", count: localOnlyMods, tone: "violet" },
+    { id: "managed", label: "Managed", count: managedPlanCount, tone: "green" },
+    { id: "blocked", label: "Blocked", count: preview?.summary.blocked || 0, tone: "red" }
+  ];
+  const allPlanFilterOptions: Array<{ id: PlanFilter; label: string; count: number; tone: string }> = [
+    { id: "all", label: "All", count: planItems.length, tone: "neutral" },
+    ...planFilterOptions
+  ];
+  const activePlanFilterOption = allPlanFilterOptions.find((option) => option.id === planFilter) || allPlanFilterOptions[0];
+  const filteredPlanItems =
+    planFilter === "all"
+      ? planItems
+      : planFilter === "managed"
+        ? managedPlanItems
+        : planItems.filter((item) => item.action === planFilter);
+  const syncPlanTitle = !preview
+    ? "Mods not checked yet"
+    : planFilter === "all"
+      ? `${planItems.length} checked mods`
+      : `${filteredPlanItems.length} ${activePlanFilterOption.label.toLowerCase()} mod${filteredPlanItems.length === 1 ? "" : "s"}`;
   const serverOnlyInstalledMods = currentScan ? currentScan.mods.filter((mod) => mod.serverOnly) : [];
   const managedOrServerOnlyMods = new Set([
     ...managedInstalledMods.map((mod) => mod.folderName.toLowerCase()),
@@ -1062,6 +1095,10 @@ function App() {
   const checkStepState = preview ? "done" : config.gamePath && config.manifestInput ? "active" : "waiting";
   const installStepState = !preview ? "waiting" : modsToInstall > 0 ? "active" : "done";
   const launchStepState = preview && modsToInstall === 0 && !preview.summary.blocked && !gameVersionMismatch ? "active" : "waiting";
+
+  function selectPlanFilter(filter: PlanFilter) {
+    setPlanFilter((current) => (current === filter ? "all" : filter));
+  }
 
   useEffect(() => {
     if (!config.gamePath) {
@@ -1137,13 +1174,25 @@ function App() {
         </section>
 
         <section className="health-panel" aria-label="Loader status">
-          <StatusRow icon={<Gamepad2 size={17} />} label="Game" value={config.gamePath ? "Selected" : detected?.found ? "Choose" : "Missing"} />
-          <StatusRow icon={<RefreshCw size={17} />} label="Game version" value={localGameVersionLabel} />
-          <StatusRow icon={<UploadCloud size={17} />} label="Server sync" value={selectedHealth?.ok ? "Online" : config.manifestInput ? "Selected" : "Missing"} />
-          <StatusRow icon={<RefreshCw size={17} />} label="Server version" value={serverVersionLabel} />
-          <StatusRow icon={serverEacEnabled ? <ShieldCheck size={17} /> : <ShieldOff size={17} />} label="Server EAC" value={serverEacLabel} />
-          <StatusRow icon={config.launchWithEac ? <ShieldCheck size={17} /> : <ShieldOff size={17} />} label="Launch EAC" value={config.launchWithEac ? "On" : "Off"} />
-          <StatusRow icon={<ListChecks size={17} />} label="Action" value={nextAction} />
+          <div className="health-panel-header">
+            <span className="section-label">Status</span>
+          </div>
+          <div className="status-group" aria-label="Game status">
+            <span className="status-group-title">Game</span>
+            <StatusRow icon={<Gamepad2 size={17} />} label="Folder" value={config.gamePath ? "Selected" : detected?.found ? "Choose" : "Missing"} />
+            <StatusRow icon={<RefreshCw size={17} />} label="Version" value={localGameVersionLabel} />
+          </div>
+          <div className="status-group" aria-label="Server status">
+            <span className="status-group-title">Server</span>
+            <StatusRow icon={<UploadCloud size={17} />} label="Sync" value={selectedHealth?.ok ? "Online" : config.manifestInput ? "Selected" : "Missing"} />
+            <StatusRow icon={<RefreshCw size={17} />} label="Version" value={serverVersionLabel} />
+            <StatusRow icon={serverEacEnabled ? <ShieldCheck size={17} /> : <ShieldOff size={17} />} label="EAC" value={serverEacLabel} />
+          </div>
+          <div className="status-group" aria-label="Launch status">
+            <span className="status-group-title">Launch</span>
+            <StatusRow icon={config.launchWithEac ? <ShieldCheck size={17} /> : <ShieldOff size={17} />} label="EAC" value={config.launchWithEac ? "On" : "Off"} />
+            <StatusRow icon={<ListChecks size={17} />} label="Next action" value={nextAction} />
+          </div>
         </section>
 
         <section className={`sidebar-launch-panel ${eacWarning ? "warn" : ""}`} aria-label="Launch game">
@@ -1591,18 +1640,30 @@ function App() {
             </section>
 
             <section className="panel compact">
-              <span className="section-label">Server Match</span>
+              <div className="server-match-heading">
+                <span className="section-label">Server Match</span>
+                {planFilter !== "all" && (
+                  <button className="filter-clear" type="button" onClick={() => setPlanFilter("all")}>
+                    <XCircle size={14} />
+                    Clear
+                  </button>
+                )}
+              </div>
               <div className="metric-grid">
-                <Metric label="Server ready" value={preview?.summary.ready || 0} tone="green" />
-                <Metric label="Install" value={preview?.summary.install || 0} tone="blue" />
-                <Metric label="Update" value={preview?.summary.update || 0} tone="amber" />
-                <Metric label="Local only" value={preview?.summary.keep || 0} tone="violet" />
-                <Metric label="Managed" value={preview?.managedSummary?.installed || managedInstalledMods.length} tone="green" />
-                <Metric label="Blocked" value={preview?.summary.blocked || 0} tone="red" />
+                {planFilterOptions.map((option) => (
+                  <Metric
+                    key={option.id}
+                    label={option.label}
+                    value={option.count}
+                    tone={option.tone}
+                    active={planFilter === option.id}
+                    disabled={!preview}
+                    onClick={() => selectPlanFilter(option.id)}
+                  />
+                ))}
               </div>
               <div className="storage-grid">
                 <StorageStat icon={<Database size={16} />} label="Server mods" value={serverSize.known ? formatBytes(serverSize.bytes) : "Unknown"} tone="gold" />
-                <StorageStat icon={serverEacEnabled ? <ShieldCheck size={16} /> : <ShieldOff size={16} />} label="Server EAC" value={serverEacLabel} tone={serverEacEnabled === null ? "muted" : serverEacEnabled ? "green" : "amber"} />
                 <StorageStat icon={<HardDrive size={16} />} label="Free space" value={diskSpace ? formatBytes(diskSpace.freeBytes) : "Unknown"} tone={freeSpaceTone} />
               </div>
             </section>
@@ -1613,7 +1674,7 @@ function App() {
               <div className="panel-heading">
                 <div>
                   <span className="section-label">Sync Plan</span>
-                  <h3>{preview ? `${preview.plan.length} checked mods` : "Mods not checked yet"}</h3>
+                  <h3>{syncPlanTitle}</h3>
                   <p className="panel-description">Green rows match the server. Local-only rows are extra mods on this PC, are not removed automatically, and may cause crashes or mismatches.</p>
                 </div>
                 <button className="secondary slim" type="button" onClick={openModsFolder} disabled={!config.gamePath}>
@@ -1622,11 +1683,36 @@ function App() {
                 </button>
               </div>
 
+              <div className="plan-filter-bar" aria-label="Sync plan filters">
+                {allPlanFilterOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    className={`plan-filter ${option.tone} ${planFilter === option.id ? "active" : ""}`}
+                    type="button"
+                    aria-pressed={planFilter === option.id}
+                    onClick={() => selectPlanFilter(option.id)}
+                    disabled={!preview && option.id !== "all"}
+                  >
+                    <span>{option.label}</span>
+                    <strong>{option.count}</strong>
+                  </button>
+                ))}
+                {planFilter !== "all" && (
+                  <button className="plan-filter clear" type="button" onClick={() => setPlanFilter("all")}>
+                    <XCircle size={15} />
+                    Clear
+                  </button>
+                )}
+              </div>
+
               <div className="mod-table">
-                {(preview?.plan || []).map((item) => (
+                {filteredPlanItems.map((item) => (
                   <PlanRow key={`${item.action}-${item.mod.id}-${item.mod.folderName || item.mod.name}`} item={item} liveStatus={livePlanStatuses[getPlanKey(item)]} />
                 ))}
-              {!preview && <EmptyState icon={<ShieldCheck size={22} />} title="Check pending" value="Click Check Server Mods to compare your game folder with the server." />}
+                {!preview && <EmptyState icon={<ShieldCheck size={22} />} title="Check pending" value="Click Check Server Mods to compare your game folder with the server." />}
+                {preview && filteredPlanItems.length === 0 && (
+                  <EmptyState icon={<Search size={22} />} title="No mods in this filter" value="Clear the filter or choose another server match value." />
+                )}
               </div>
             </section>
 
@@ -1823,9 +1909,11 @@ function App() {
 function StatusRow({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
     <div className="status-row">
-      {icon}
-      <span>{label}</span>
-      <strong>{value}</strong>
+      <span className="status-icon">{icon}</span>
+      <span className="status-copy">
+        <span>{label}</span>
+        <strong>{value}</strong>
+      </span>
     </div>
   );
 }
@@ -1862,12 +1950,26 @@ function getServerVersionLabel(health?: ServerHealth) {
   return health.gameVersion || (health.steamBuildId ? `Build ${health.steamBuildId}` : "Version ?");
 }
 
-function Metric({ label, value, tone }: { label: string; value: number; tone: string }) {
+function Metric({
+  label,
+  value,
+  tone,
+  active = false,
+  disabled = false,
+  onClick
+}: {
+  label: string;
+  value: number;
+  tone: string;
+  active?: boolean;
+  disabled?: boolean;
+  onClick?: () => void;
+}) {
   return (
-    <div className={`metric ${tone}`}>
+    <button className={`metric ${tone} ${active ? "active" : ""}`} type="button" aria-pressed={active} disabled={disabled} onClick={onClick}>
       <span>{label}</span>
       <strong>{value}</strong>
-    </div>
+    </button>
   );
 }
 
