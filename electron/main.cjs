@@ -274,7 +274,6 @@ function registerIpc() {
       const bundle = await createSupportBundle((progress) => {
         sendIpcProgress(event, "gdg:support-bundle-progress", progress);
       });
-      shell.showItemInFolder(bundle.path);
       return { ok: true, ...bundle };
     } catch (error) {
       await appendDiagnosticLog("gdg:create-support-bundle", error);
@@ -288,8 +287,18 @@ function registerIpc() {
     }
   });
 
+  ipcMain.handle("gdg:copy-file-to-clipboard", async (_event, payload) => {
+    try {
+      const result = await copyFileToClipboard(payload?.filePath);
+      return { ok: true, ...result };
+    } catch (error) {
+      await appendDiagnosticLog("gdg:copy-file-to-clipboard", error);
+      return { ok: false, error: error.message || "File could not be copied." };
+    }
+  });
+
   ipcMain.handle("gdg:open-path", async (_event, payload) => {
-    if (!payload.filePath) {
+    if (!payload?.filePath) {
       return { ok: false, error: "Missing path." };
     }
 
@@ -445,6 +454,65 @@ async function createSupportBundleFromMenu() {
       detail: error.message || String(error)
     });
   }
+}
+
+async function copyFileToClipboard(filePath) {
+  const rawPath = String(filePath || "").trim();
+  if (!rawPath) {
+    throw new Error("Missing support ZIP path.");
+  }
+
+  const resolvedPath = path.resolve(normalizeLocalPath(rawPath));
+  if (!(await exists(resolvedPath))) {
+    throw new Error("Support ZIP was not found.");
+  }
+
+  const stats = await fsp.stat(resolvedPath);
+  if (!stats.isFile()) {
+    throw new Error("Only files can be copied to Discord.");
+  }
+
+  return new Promise((resolve, reject) => {
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      "$ProgressPreference = 'SilentlyContinue'",
+      "$target = [Environment]::GetEnvironmentVariable('GDG_CLIPBOARD_FILE')",
+      "if (-not $target) { throw 'Missing clipboard file path.' }",
+      "Add-Type -AssemblyName System.Windows.Forms",
+      "$files = New-Object System.Collections.Specialized.StringCollection",
+      "[void] $files.Add($target)",
+      "[System.Windows.Forms.Clipboard]::SetFileDropList($files)"
+    ].join("; ");
+    const encodedScript = Buffer.from(script, "utf16le").toString("base64");
+    const child = spawn("powershell.exe", [
+      "-NoProfile",
+      "-Sta",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-EncodedCommand",
+      encodedScript
+    ], {
+      windowsHide: true,
+      env: {
+        ...process.env,
+        GDG_CLIPBOARD_FILE: resolvedPath
+      }
+    });
+    let stderr = "";
+
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve({ path: resolvedPath });
+        return;
+      }
+
+      reject(new Error(stderr.trim() || `Clipboard copy failed with exit code ${code}.`));
+    });
+  });
 }
 
 async function createSupportBundle(onProgress = () => {}) {

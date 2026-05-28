@@ -1458,7 +1458,6 @@ button:disabled {
 .support-result,
 .backup-result-card {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   min-height: 58px;
@@ -1469,7 +1468,12 @@ button:disabled {
   background: rgba(50, 234, 168, 0.08);
 }
 
+.support-result {
+  grid-template-columns: 24px minmax(0, 1fr) auto auto auto;
+}
+
 .backup-result-card {
+  grid-template-columns: 24px minmax(0, 1fr) auto auto;
   border-color: rgba(217, 165, 54, 0.3);
   background: rgba(217, 165, 54, 0.08);
 }

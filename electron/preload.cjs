@@ -46,5 +46,6 @@ contextBridge.exposeInMainWorld("gdg", {
   openSteamUpdate: () => ipcRenderer.invoke("gdg:open-steam-update"),
   openDiagnosticLog: () => ipcRenderer.invoke("gdg:open-diagnostic-log"),
   createSupportBundle: () => ipcRenderer.invoke("gdg:create-support-bundle"),
+  copyFileToClipboard: (filePath) => ipcRenderer.invoke("gdg:copy-file-to-clipboard", { filePath }),
   openPath: (filePath) => ipcRenderer.invoke("gdg:open-path", { filePath })
 });

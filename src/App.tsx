@@ -450,7 +450,7 @@ function App() {
       const directory = await loadDirectory(config.serverDirectoryInput);
       const healthById = (directory as ServerDirectory & { healthById?: Record<string, ServerHealth> }).healthById || {};
       const syncCount = directory.servers.filter((server) => healthById[server.id]?.ok).length;
-      const gameCount = directory.servers.filter((server) => healthById[server.id]?.gameStatus === "online").length;
+      const gameCount = directory.servers.filter((server) => getGameServerStatusValue(healthById[server.id]) === "online").length;
       return `${syncCount} sync feed${syncCount === 1 ? "" : "s"} available - ${gameCount} game server${gameCount === 1 ? "" : "s"} online`;
     });
   }
@@ -1077,13 +1077,36 @@ function App() {
         `Support bundle: ${result.path}`
       ].join("\n");
       setSupportMessage(nextSupportMessage);
+
       try {
-        await navigator.clipboard?.writeText(nextSupportMessage);
-        setMessage("Support bundle created and message copied");
-      } catch {
-        setMessage("Support bundle created");
+        await copySupportBundleZip(result.path);
+        return "Support ZIP copied. Paste it into Discord.";
+      } catch (copyError) {
+        try {
+          await navigator.clipboard?.writeText(nextSupportMessage);
+          return "Support ZIP created. Details copied; attach the ZIP from Open Folder.";
+        } catch {
+          const reason = copyError instanceof Error ? copyError.message : String(copyError);
+          return reason ? `Support ZIP created. Copy failed: ${reason}` : "Support ZIP created. Use Open Folder to attach it.";
+        }
       }
     });
+  }
+
+  async function copySupportBundleZip(filePath: string) {
+    const result = await window.gdg.copyFileToClipboard(filePath);
+    if (!result.ok) {
+      throw new Error(result.error || "Support ZIP could not be copied.");
+    }
+  }
+
+  async function copySupportDetails(messageText: string) {
+    if (!messageText) {
+      return;
+    }
+
+    await navigator.clipboard?.writeText(messageText);
+    setMessage("Support details copied");
   }
 
   const working = Boolean(busy);
@@ -1196,7 +1219,7 @@ function App() {
   const backupTotalBytes = backups.reduce((total, backup) => total + (backup.sizeBytes || 0), 0);
   const visibleServers = serverDirectory?.servers || [];
   const syncAvailableCount = visibleServers.filter((server) => serverHealth[server.id]?.ok).length;
-  const gameOnlineCount = visibleServers.filter((server) => serverHealth[server.id]?.gameStatus === "online").length;
+  const gameOnlineCount = visibleServers.filter((server) => getGameServerStatusValue(serverHealth[server.id]) === "online").length;
   const selectedGameServerStatus = getGameServerStatusLabel(selectedHealth);
   const recommendedServerId = visibleServers.find(isRecommendedServer)?.id || visibleServers[0]?.id || "";
   const selectedGameFolderLabel = config.gamePath ? getFolderName(config.gamePath) : detected?.found ? "Choose" : "Missing";
@@ -1761,6 +1784,8 @@ function App() {
                   bundle={supportBundle}
                   message={supportMessage}
                   onOpen={() => void window.gdg.openPath(supportBundle.folderPath)}
+                  onCopyZip={copySupportBundleZip}
+                  onCopyDetails={copySupportDetails}
                 />
               )}
               {advancedMode && readyToPlay && (
@@ -2477,6 +2502,8 @@ function App() {
                 bundle={supportBundle}
                 message={supportMessage}
                 onOpen={() => void window.gdg.openPath(supportBundle.folderPath)}
+                onCopyZip={copySupportBundleZip}
+                onCopyDetails={copySupportDetails}
               />
             )}
 
@@ -2662,16 +2689,32 @@ function BackupResultCard({
 function SupportResult({
   bundle,
   message,
-  onOpen
+  onOpen,
+  onCopyZip,
+  onCopyDetails
 }: {
   bundle: { path: string; folderPath: string; fileName: string };
   message: string;
   onOpen: () => void;
+  onCopyZip: (filePath: string) => Promise<void>;
+  onCopyDetails: (message: string) => Promise<void>;
 }) {
-  async function copyMessage() {
-    if (message) {
-      await navigator.clipboard?.writeText(message);
+  const [copyStatus, setCopyStatus] = useState("");
+
+  async function copyZip() {
+    setCopyStatus("Copying ZIP...");
+    try {
+      await onCopyZip(bundle.path);
+      setCopyStatus("ZIP copied. Paste it into Discord.");
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setCopyStatus(detail || "ZIP copy failed. Use Open Folder to attach it.");
     }
+  }
+
+  async function copyDetails() {
+    await onCopyDetails(message);
+    setCopyStatus("Details copied.");
   }
 
   return (
@@ -2679,15 +2722,19 @@ function SupportResult({
       <Archive size={18} />
       <span>
         <strong>Support bundle ready</strong>
-        <small>{bundle.fileName}{message ? " - message copied for Discord" : ""}</small>
+        <small>{copyStatus || `${bundle.fileName} - copy the ZIP, then paste it into Discord`}</small>
       </span>
       <button className="secondary slim" type="button" onClick={onOpen}>
         <FolderOpen size={16} />
         Open Folder
       </button>
-      <button className="secondary slim" type="button" onClick={() => void copyMessage()} disabled={!message}>
+      <button className="primary slim" type="button" onClick={() => void copyZip()}>
         <Copy size={16} />
-        Copy Message
+        Copy ZIP
+      </button>
+      <button className="secondary slim" type="button" onClick={() => void copyDetails()} disabled={!message}>
+        <Copy size={16} />
+        Copy Details
       </button>
     </div>
   );
@@ -2773,44 +2820,62 @@ function getProgressButtonLabel(progress: SyncProgress | null, verb: string) {
   return `${verb}...`;
 }
 
-function getGameServerStatusLabel(health?: ServerHealth | null) {
+function getGameServerStatusValue(health?: ServerHealth | null): "checking" | "online" | "offline" | "unavailable" {
   if (!health) {
+    return "checking";
+  }
+
+  if (health.gameStatus === "online" || health.gameStatus === "offline") {
+    return health.gameStatus;
+  }
+
+  return "unavailable";
+}
+
+function getGameServerStatusLabel(health?: ServerHealth | null) {
+  const status = getGameServerStatusValue(health);
+
+  if (status === "checking") {
     return "Checking game server";
   }
 
-  if (health.gameStatus === "online") {
+  if (status === "online") {
     return "Game server online";
   }
 
-  if (health.gameStatus === "offline") {
+  if (status === "offline") {
     return "Game server offline";
   }
 
-  return "Game server unknown";
+  return "Game status unavailable";
 }
 
 function getGameServerBadgeLabel(health?: ServerHealth | null) {
-  if (!health) {
+  const status = getGameServerStatusValue(health);
+
+  if (status === "checking") {
     return "Game ?";
   }
 
-  if (health.gameStatus === "online") {
+  if (status === "online") {
     return "Game Online";
   }
 
-  if (health.gameStatus === "offline") {
+  if (status === "offline") {
     return "Game Offline";
   }
 
-  return "Game ?";
+  return "Game N/A";
 }
 
 function getGameServerStatusClass(health?: ServerHealth | null) {
-  if (!health || health.gameStatus === "unknown") {
+  const status = getGameServerStatusValue(health);
+
+  if (status === "checking" || status === "unavailable") {
     return "game-unknown";
   }
 
-  return health.gameStatus === "online" ? "game-online" : "game-offline";
+  return status === "online" ? "game-online" : "game-offline";
 }
 
 function getGameServerBadgeClass(health?: ServerHealth | null) {

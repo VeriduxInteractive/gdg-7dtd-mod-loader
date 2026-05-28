@@ -299,5 +299,6 @@ export type GdgApi = {
   openSteamUpdate: () => Promise<{ ok: boolean; target?: "steam" | "web"; error?: string }>;
   openDiagnosticLog: () => Promise<{ ok: boolean; error?: string; path: string }>;
   createSupportBundle: () => Promise<{ ok: boolean; error?: string; path: string; folderPath: string; fileName: string }>;
+  copyFileToClipboard: (filePath: string) => Promise<{ ok: boolean; error?: string; path?: string }>;
   openPath: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
 };
