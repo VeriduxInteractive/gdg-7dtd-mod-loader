@@ -137,11 +137,11 @@ function App() {
   const [planFilter, setPlanFilter] = useState<PlanFilter>("all");
   const [openStep, setOpenStep] = useState<GuidedStepId | "">("setup");
   const [advancedMode, setAdvancedMode] = useState(false);
+  const [guidedSetupOpen, setGuidedSetupOpen] = useState(false);
   const [cleanupPreference, setCleanupPreference] = useState<CleanupPreference>(readCleanupPreference);
   const progressPanelRef = useRef<HTMLElement | null>(null);
   const lastAutoScrolledProgressKey = useRef("");
   const lastVersionPromptKey = useRef("");
-  const lastAutoCheckKey = useRef("");
 
   useEffect(() => {
     void initialize();
@@ -332,7 +332,7 @@ function App() {
     return serverDirectory?.servers.find((server) => server.id === config.lastServerId) || serverDirectory?.servers[0] || null;
   }, [config.lastServerId, serverDirectory]);
   const installProfile = useMemo(() => getInstallProfile(config.gamePath, detected?.path), [config.gamePath, detected?.path]);
-  const showSetupChoices = Boolean(detected?.found && !config.gamePath && !setupDismissed);
+  const showSetupChoices = Boolean(!config.gamePath && !setupDismissed && (detected?.found || guidedSetupOpen));
   const detectedSetupLabel = detected?.isGdgCopy ? "Detected GDG copy" : "Detected game";
 
   async function initialize() {
@@ -509,30 +509,91 @@ function App() {
     });
   }
 
+  async function startGuidedSetup() {
+    setActiveTab("sync");
+    setOpenStep("setup");
+
+    if (detected?.found) {
+      setSetupDismissed(false);
+      setGuidedSetupOpen(true);
+      setMessage("Choose game setup");
+      return;
+    }
+
+    await runTask("Finding game", async () => {
+      const result = await window.gdg.detectGame();
+      setDetected(result);
+      setSetupDismissed(false);
+
+      if (!result.found) {
+        await updateGamePath("");
+        setGuidedSetupOpen(true);
+        return "Choose game folder";
+      }
+
+      setGuidedSetupOpen(true);
+      return "Choose game setup";
+    });
+  }
+
   async function browseGameFolder() {
+    await browseGameFolderInternal(false);
+  }
+
+  async function browseGameFolderAndContinue() {
+    await browseGameFolderInternal(true);
+  }
+
+  async function browseGameFolderInternal(continueGuided: boolean) {
     await runTask("Selecting folder", async () => {
       const result = await window.gdg.selectGameFolder();
       if (!result.canceled) {
-        await updateGamePath(result.path);
+        const saved = await updateGamePath(result.path);
         if (!result.valid) {
           setError("Folder selected. It does not look like a 7 Days to Die install yet.");
+          return;
+        }
+
+        setGuidedSetupOpen(false);
+        if (continueGuided) {
+          await continueGuidedFlow(saved.gamePath, saved.manifestInput, { forceCheck: true });
         }
       }
     });
   }
 
   async function useDetectedInstall() {
+    await selectDetectedInstall(false);
+  }
+
+  async function useDetectedInstallAndContinue() {
+    await selectDetectedInstall(true);
+  }
+
+  async function selectDetectedInstall(continueGuided: boolean) {
     if (!detected?.found) {
       setError("No detected 7 Days to Die install.");
       return;
     }
 
     await runTask("Selecting existing install", async () => {
-      await updateGamePath(detected.path);
+      const saved = await updateGamePath(detected.path);
+      setGuidedSetupOpen(false);
+      if (continueGuided) {
+        await continueGuidedFlow(saved.gamePath, saved.manifestInput, { forceCheck: true });
+      }
     });
   }
 
   async function createGdgCopy() {
+    await createGdgCopyInternal(false);
+  }
+
+  async function createGdgCopyAndContinue() {
+    await createGdgCopyInternal(true);
+  }
+
+  async function createGdgCopyInternal(continueGuided: boolean) {
     if (!detected?.found) {
       setError("No detected 7 Days to Die install.");
       return;
@@ -555,11 +616,16 @@ function App() {
 
       clearSyncState(false);
       setLastClone(result);
-      await updateConfig({ gamePath: result.targetPath });
+      const saved = await updateConfig({ gamePath: result.targetPath });
       setSetupDismissed(true);
+      setGuidedSetupOpen(false);
 
       if (result.shortcutError) {
         setError(`GDG copy is ready, but shortcut failed: ${result.shortcutError}`);
+      }
+
+      if (continueGuided) {
+        await continueGuidedFlow(saved.gamePath, saved.manifestInput, { forceCheck: true });
       }
     });
   }
@@ -568,6 +634,7 @@ function App() {
     await runTask("Skipping setup", async () => {
       await updateGamePath("");
       setSetupDismissed(true);
+      setGuidedSetupOpen(false);
     });
   }
 
@@ -577,10 +644,11 @@ function App() {
       setDetected(result);
       await updateGamePath("");
       setSetupDismissed(false);
+      setGuidedSetupOpen(true);
       setActiveTab("sync");
 
       if (!result.found) {
-        throw new Error("No 7 Days to Die install was detected. Use the folder browser to choose one.");
+        return "Choose game folder";
       }
     });
   }
@@ -641,7 +709,11 @@ function App() {
     });
   }
 
-  async function previewSync(options: { promptSteam?: boolean } = {}) {
+  async function previewSync(options: { promptSteam?: boolean; gamePath?: string; manifestInput?: string } = {}) {
+    const effectiveGamePath = options.gamePath || config.gamePath;
+    const effectiveManifestInput = options.manifestInput || config.manifestInput;
+    let previewResult: SyncPreview | null = null;
+
     setSyncProgress({
       phase: "scanning",
       message: "Checking your Mods folder against the server list.",
@@ -652,22 +724,23 @@ function App() {
 
     await runTask("Checking server mods", async () => {
       const result = await window.gdg.previewSync({
-        gamePath: config.gamePath,
-        manifestInput: config.manifestInput
+        gamePath: effectiveGamePath,
+        manifestInput: effectiveManifestInput
       });
+      previewResult = result;
       setLivePlanStatuses({});
       setPreview(result);
       setScan(result.local);
       setApplyResult(null);
       const doctorResult = await window.gdg.runDoctor({
-        gamePath: config.gamePath,
-        manifestInput: config.manifestInput,
+        gamePath: effectiveGamePath,
+        manifestInput: effectiveManifestInput,
         launchWithEac: config.launchWithEac
       });
       setDoctor(doctorResult);
       setActiveTab("sync");
       if (result.gameCompatibility.checked && !result.gameCompatibility.ok) {
-        const promptKey = `${config.gamePath}|${config.manifestInput}|${result.gameCompatibility.reason}`;
+        const promptKey = `${effectiveGamePath}|${effectiveManifestInput}|${result.gameCompatibility.reason}`;
         setOpenStep("check");
         setError(`${result.gameCompatibility.reason} Update 7 Days to Die in Steam before installing GDG mods.`);
         setMessage("Game update needed");
@@ -690,11 +763,100 @@ function App() {
         percent: 100
       });
     });
+
+    return previewResult;
   }
 
-  async function applySync() {
-    if (syncSpaceBlocked && diskSpace) {
-      setError(`Not enough free space. GDG needs about ${formatBytes(syncSpaceRequirement.bytes)} free on this drive, but only ${formatBytes(diskSpace.freeBytes)} is available.`);
+  async function continueGuidedFlow(gamePath: string = config.gamePath, manifestInput: string = config.manifestInput, options: { forceCheck?: boolean } = {}) {
+    if (!gamePath) {
+      await startGuidedSetup();
+      return;
+    }
+
+    if (!manifestInput) {
+      setOpenStep("check");
+      setMessage("Choose a GDG server");
+      return;
+    }
+
+    const nextPreview = !options.forceCheck && preview && normalizePath(preview.local.gamePath) === normalizePath(gamePath)
+      ? preview
+      : await previewSync({ gamePath, manifestInput });
+
+    if (!nextPreview) {
+      return;
+    }
+
+    const nextServerSize = getServerSize(nextPreview, selectedHealth);
+    const nextSpaceRequirement = getSyncSpaceRequirement(nextPreview, nextServerSize);
+    const nextModsToInstall = (nextPreview.summary.install || 0) + (nextPreview.summary.update || 0);
+    const nextLocalOnlyMods = nextPreview.summary.keep || 0;
+    const nextManagedExtraMods = nextPreview.managedSummary?.extra || 0;
+    const nextGameVersionMismatch = Boolean(nextPreview.gameCompatibility.checked && !nextPreview.gameCompatibility.ok);
+    const nextInstallBlocked = Boolean(nextPreview.summary.blocked || (nextPreview.skippedServerOnly?.length || 0) > 0);
+
+    if (nextGameVersionMismatch) {
+      setOpenStep("check");
+      return;
+    }
+
+    if (diskSpace && nextModsToInstall > 0 && nextSpaceRequirement.known && diskSpace.freeBytes < nextSpaceRequirement.bytes) {
+      setOpenStep("install");
+      setError(`Not enough free space. GDG needs about ${formatBytes(nextSpaceRequirement.bytes)} free on this drive, but only ${formatBytes(diskSpace.freeBytes)} is available.`);
+      return;
+    }
+
+    if (nextInstallBlocked) {
+      await createSupportBundle();
+      return;
+    }
+
+    if (nextLocalOnlyMods > 0) {
+      setOpenStep("install");
+      if (cleanupPreference === "backup" || cleanupPreference === "delete") {
+        await cleanLocalMods(cleanupPreference, { gamePath, manifestInput, previewOverride: nextPreview });
+      } else {
+        setMessage("Choose how to handle extra mods");
+      }
+      return;
+    }
+
+    if (nextManagedExtraMods > 0) {
+      setOpenStep("install");
+      if (cleanupPreference === "backup" || cleanupPreference === "delete") {
+        await cleanManagedMods(cleanupPreference, "extra", { gamePath, manifestInput, previewOverride: nextPreview });
+      } else {
+        setMessage("Choose how to handle old GDG mods");
+      }
+      return;
+    }
+
+    if (nextModsToInstall > 0) {
+      await applySync({ gamePath, manifestInput, previewOverride: nextPreview });
+      return;
+    }
+
+    const nextServerEacEnabled = typeof nextPreview.manifest.server.eacEnabled === "boolean" ? nextPreview.manifest.server.eacEnabled : null;
+    if (typeof nextServerEacEnabled === "boolean" && nextServerEacEnabled !== Boolean(config.launchWithEac)) {
+      await updateLaunchWithEac(nextServerEacEnabled);
+      setMessage(`EAC set ${nextServerEacEnabled ? "on" : "off"}. Ready to launch.`);
+      return;
+    }
+
+    setOpenStep("launch");
+    setMessage("Ready to launch");
+  }
+
+  async function applySync(options: { gamePath?: string; manifestInput?: string; previewOverride?: SyncPreview } = {}) {
+    const activePreview = options.previewOverride || preview;
+    const activeServerSize = getServerSize(activePreview, selectedHealth);
+    const activeSpaceRequirement = getSyncSpaceRequirement(activePreview, activeServerSize);
+    const activeModsToInstall = activePreview ? (activePreview.summary.install || 0) + (activePreview.summary.update || 0) : modsToInstall;
+    const effectiveGamePath = options.gamePath || config.gamePath;
+    const effectiveManifestInput = options.manifestInput || config.manifestInput;
+
+    if (diskSpace && activePreview && activeModsToInstall > 0 && activeSpaceRequirement.known && diskSpace.freeBytes < activeSpaceRequirement.bytes) {
+      setError(`Not enough free space. GDG needs about ${formatBytes(activeSpaceRequirement.bytes)} free on this drive, but only ${formatBytes(diskSpace.freeBytes)} is available.`);
       setOpenStep("install");
       return;
     }
@@ -704,14 +866,14 @@ function App() {
       phase: "preparing",
       message: "Starting mod sync.",
       current: 0,
-      total: Math.max((preview?.summary.install || 0) + (preview?.summary.update || 0), 1),
+      total: Math.max(activeModsToInstall, 1),
       percent: 0
     });
 
     await runTask("Syncing mods", async () => {
       const result = await window.gdg.applySync({
-        gamePath: config.gamePath,
-        manifestInput: config.manifestInput
+        gamePath: effectiveGamePath,
+        manifestInput: effectiveManifestInput
       });
       setApplyResult(result);
       if (result.preview) {
@@ -761,19 +923,24 @@ function App() {
     });
   }
 
-  async function cleanLocalMods(mode: "backup" | "delete") {
+  async function cleanLocalMods(mode: "backup" | "delete", options: { gamePath?: string; manifestInput?: string; previewOverride?: SyncPreview } = {}) {
+    const activePreview = options.previewOverride || preview;
+    const expected = activePreview?.summary.keep || localOnlyMods;
+    const effectiveGamePath = options.gamePath || config.gamePath;
+    const effectiveManifestInput = options.manifestInput || config.manifestInput;
+
     setSyncProgress({
       phase: "preparing",
       message: mode === "delete" ? "Preparing to delete local-only mods." : "Preparing to move local-only mods to backup.",
       current: 0,
-      total: Math.max(localOnlyMods, 1),
+      total: Math.max(expected, 1),
       percent: 0
     });
 
     await runTask(mode === "delete" ? "Deleting local-only mods" : "Cleaning local-only mods", async () => {
       const result = await window.gdg.cleanLocalMods({
-        gamePath: config.gamePath,
-        manifestInput: config.manifestInput,
+        gamePath: effectiveGamePath,
+        manifestInput: effectiveManifestInput,
         mode
       });
       setApplyResult(result);
@@ -843,8 +1010,12 @@ function App() {
     });
   }
 
-  async function cleanManagedMods(mode: "backup" | "delete", scope: "all" | "extra" = "all") {
-    const expected = scope === "extra" ? managedExtraMods : managedOrServerOnlyMods;
+  async function cleanManagedMods(mode: "backup" | "delete", scope: "all" | "extra" = "all", options: { gamePath?: string; manifestInput?: string; previewOverride?: SyncPreview } = {}) {
+    const activePreview = options.previewOverride || preview;
+    const expected = scope === "extra" ? (activePreview?.managedSummary?.extra || managedExtraMods) : managedOrServerOnlyMods;
+    const effectiveGamePath = options.gamePath || config.gamePath;
+    const effectiveManifestInput = options.manifestInput || config.manifestInput;
+
     setSyncProgress({
       phase: "preparing",
       message: mode === "delete" ? "Preparing to delete GDG-managed mods." : "Preparing to move GDG-managed mods to backup.",
@@ -855,8 +1026,8 @@ function App() {
 
     await runTask(mode === "delete" ? "Deleting managed mods" : "Backing up managed mods", async () => {
       const result = await window.gdg.cleanManagedMods({
-        gamePath: config.gamePath,
-        manifestInput: config.manifestInput,
+        gamePath: effectiveGamePath,
+        manifestInput: effectiveManifestInput,
         mode,
         scope
       });
@@ -1221,7 +1392,7 @@ function App() {
   const syncAvailableCount = visibleServers.filter((server) => serverHealth[server.id]?.ok).length;
   const gameOnlineCount = visibleServers.filter((server) => getGameServerStatusValue(serverHealth[server.id]) === "online").length;
   const selectedGameServerStatus = getGameServerStatusLabel(selectedHealth);
-  const recommendedServerId = visibleServers.find(isRecommendedServer)?.id || visibleServers[0]?.id || "";
+  const recommendedServerId = visibleServers.find(isRecommendedServer)?.id || "";
   const selectedGameFolderLabel = config.gamePath ? getFolderName(config.gamePath) : detected?.found ? "Choose" : "Missing";
   const setupStepState = config.gamePath ? "done" : "active";
   const checkStepState = preview ? "done" : config.gamePath && config.manifestInput ? "active" : "waiting";
@@ -1248,12 +1419,12 @@ function App() {
     ? detected?.found
       ? {
           tone: "gold",
-          title: detected.isGdgCopy ? "Next up: use the GDG copy" : "Next up: create a GDG copy",
-          detail: detected.isGdgCopy ? "Select the detected GDG folder and continue." : "Keep vanilla clean with a separate GDG folder.",
-          label: detected.isGdgCopy ? "Use GDG Copy" : "Create GDG Copy",
-          icon: detected.isGdgCopy ? <FolderOpen size={18} /> : <Copy size={18} />,
-          onClick: detected.isGdgCopy ? useDetectedInstall : createGdgCopy,
-          previewText: detected.isGdgCopy ? "GDG will use the detected game copy for checks, sync, and launch." : "GDG will create a separate 7 Days To Die - GDG folder.",
+          title: "Next up: choose game setup",
+          detail: "Pick whether GDG should use this folder or make a separate copy.",
+          label: "Choose Setup",
+          icon: <ListChecks size={18} />,
+          onClick: startGuidedSetup,
+          previewText: "GDG will pause for this choice, then continue checking and installing what is needed.",
           disabled: working
         }
       : {
@@ -1262,7 +1433,7 @@ function App() {
           detail: "GDG needs the local game folder before it can compare mods.",
           label: "Detect Game",
           icon: <Search size={18} />,
-          onClick: detectGame,
+          onClick: startGuidedSetup,
           disabled: working
         }
     : !config.manifestInput
@@ -1282,8 +1453,8 @@ function App() {
             detail: "Compare this folder with the selected GDG server.",
             label: "Check Server Mods",
             icon: <ListChecks size={18} />,
-            onClick: previewSync,
-            previewText: "GDG will compare this folder with the selected server. Nothing is installed yet.",
+            onClick: () => void continueGuidedFlow(),
+            previewText: "GDG will check this folder, install safe missing mods, and stop if it needs your choice.",
             disabled: working
           }
         : gameVersionMismatch
@@ -1393,7 +1564,7 @@ function App() {
                         detail: `${modsToInstall} server change${modsToInstall === 1 ? "" : "s"} ready for this folder.`,
                         label: "Install Missing Mods",
                         icon: <Download size={18} />,
-                        onClick: applySync,
+                        onClick: () => void continueGuidedFlow(),
                         workingLabel: getProgressButtonLabel(syncProgress, "Installing"),
                         previewText: `GDG will install ${modsToInstall} server change${modsToInstall === 1 ? "" : "s"} and back up anything it replaces.`,
                         detailsAction: {
@@ -1411,7 +1582,7 @@ function App() {
                           detail: `The selected server launches with EAC ${serverEacEnabled ? "on" : "off"}.`,
                           label: `Set EAC ${serverEacEnabled ? "On" : "Off"}`,
                           icon: serverEacEnabled ? <ShieldCheck size={18} /> : <ShieldOff size={18} />,
-                          onClick: () => void updateLaunchWithEac(Boolean(serverEacEnabled)),
+                          onClick: () => void continueGuidedFlow(),
                           disabled: working
                         }
                       : eacWarning && hasDllMods && config.launchWithEac
@@ -1542,7 +1713,7 @@ function App() {
       ? {
           tone: working ? "blue" : "gold",
           title: working ? "Checking" : "Ready to check",
-          detail: "GDG will compare this folder with the selected server automatically.",
+          detail: "GDG will wait for you to press Make Me Ready.",
           value: working ? "..." : "Check"
         }
       : problemCards.length > 0
@@ -1581,24 +1752,6 @@ function App() {
       setOpenStep("launch");
     }
   }, [config.gamePath, preview, modsToInstall, localOnlyMods]);
-
-  useEffect(() => {
-    if (!config.gamePath || !config.manifestInput || preview || working) {
-      return;
-    }
-
-    const autoCheckKey = `${config.gamePath}|${config.manifestInput}`;
-    if (lastAutoCheckKey.current === autoCheckKey) {
-      return;
-    }
-
-    lastAutoCheckKey.current = autoCheckKey;
-    const timer = window.setTimeout(() => {
-      void previewSync({ promptSteam: false });
-    }, 600);
-
-    return () => window.clearTimeout(timer);
-  }, [config.gamePath, config.manifestInput, preview, working]);
 
   return (
     <main
@@ -1767,6 +1920,30 @@ function App() {
 
               {advancedMode && <ReadinessMeter summary={readinessSummary} />}
               <GuideCard action={guidedAction} />
+              {!advancedMode && config.gamePath && !guidedSetupOpen && (
+                <SelectedFolderCard
+                  tone={installProfile.tone}
+                  installLabel={installProfile.label}
+                  folderPath={config.gamePath}
+                  freeSpaceLabel={diskSpace ? `${formatBytes(diskSpace.freeBytes)} free on this drive` : "Checking free space"}
+                  onOpen={openGameFolder}
+                  onChange={changeInstallSetup}
+                  disabled={working}
+                />
+              )}
+              {!advancedMode && guidedSetupOpen && showSetupChoices && (
+                <SetupChoicePanel
+                  detected={detected}
+                  detectedSetupLabel={detectedSetupLabel}
+                  createShortcut={createShortcut}
+                  onCreateShortcutChange={setCreateShortcut}
+                  onUseExisting={useDetectedInstallAndContinue}
+                  onCreateCopy={createGdgCopyAndContinue}
+                  onBrowse={browseGameFolderAndContinue}
+                  onDecline={declineGameSetup}
+                  disabled={working}
+                />
+              )}
               {advancedMode && problemCards.length > 0 && <ProblemCards cards={problemCards} />}
               {applyResult?.backupRoot && !advancedMode && (
                 <BackupResultCard
@@ -1847,52 +2024,17 @@ function App() {
                     )}
 
                     {showSetupChoices && (
-                      <div className="setup-panel">
-                        <div className="setup-heading">
-                          <div>
-                            <span className="section-label">Game Setup</span>
-                            <strong>Choose how GDG should prepare 7 Days to Die.</strong>
-                            <p>
-                              A GDG copy is safest for most players. It creates a separate folder beside the detected game and starts with a clean Mods folder.
-                            </p>
-                            <small>{detectedSetupLabel}: {detected?.path}</small>
-                            {detected?.isGdgCopy && <small>This already looks like a GDG copy. Browse for your Steam install if you want to overwrite vanilla.</small>}
-                          </div>
-                        </div>
-
-                        <div className="setup-options">
-                          <button className="setup-option overwrite" type="button" onClick={useDetectedInstall} disabled={working}>
-                            <AlertTriangle size={20} />
-                            <span>
-                              <strong>{detected?.isGdgCopy ? "Use detected GDG copy" : "Overwrite existing"}</strong>
-                              <small>
-                                {detected?.isGdgCopy
-                                  ? "Select the detected modded copy. This will not point at your vanilla Steam folder."
-                                  : "Use your current 7 Days to Die folder. GDG mods will be installed into this game."}
-                              </small>
-                            </span>
-                          </button>
-                          <button className="setup-option copy" type="button" onClick={createGdgCopy} disabled={working}>
-                            <Copy size={20} />
-                            <span>
-                              <strong>Create GDG copy <em>Recommended</em></strong>
-                              <small>Make a separate folder named 7 Days To Die - GDG with a clean Mods folder.</small>
-                            </span>
-                          </button>
-                          <button className="setup-option decline" type="button" onClick={declineGameSetup} disabled={working}>
-                            <XCircle size={20} />
-                            <span>
-                              <strong>Decline</strong>
-                              <small>Skip setup for now. You can browse for a folder or change setup later.</small>
-                            </span>
-                          </button>
-                        </div>
-
-                        <label className="shortcut-toggle">
-                          <input type="checkbox" checked={createShortcut} onChange={(event) => setCreateShortcut(event.target.checked)} />
-                          <span>Create desktop shortcut for the GDG copy</span>
-                        </label>
-                      </div>
+                      <SetupChoicePanel
+                        detected={detected}
+                        detectedSetupLabel={detectedSetupLabel}
+                        createShortcut={createShortcut}
+                        onCreateShortcutChange={setCreateShortcut}
+                        onUseExisting={useDetectedInstall}
+                        onCreateCopy={createGdgCopy}
+                        onBrowse={browseGameFolder}
+                        onDecline={declineGameSetup}
+                        disabled={working}
+                      />
                     )}
 
                     {(!config.gamePath || advancedMode) && (
@@ -2031,7 +2173,7 @@ function App() {
                         </div>
                       </label>
                     ) : (
-                      <p className="step-copy">GDG will check this folder automatically when your selected server or game folder changes.</p>
+                      <p className="step-copy">Click Check Server Mods when you are ready. Nothing is installed by this check.</p>
                     )}
 
                     <div className="step-actions">
@@ -2180,7 +2322,7 @@ function App() {
                         </>
                       )}
                       {showInstallMissingAction && (
-                        <button className="primary" type="button" onClick={applySync} disabled={working}>
+                        <button className="primary" type="button" onClick={() => void applySync()} disabled={working}>
                           <Download size={17} />
                           Install Missing Mods
                         </button>
@@ -2299,7 +2441,7 @@ function App() {
               </section>
             )}
 
-            {syncProgress && (advancedMode || working) && <ProgressPanel progress={syncProgress} panelRef={progressPanelRef} />}
+            {syncProgress && (advancedMode || working || showingSupportProgress) && <ProgressPanel progress={syncProgress} panelRef={progressPanelRef} />}
 
             {advancedMode && (
               <section className="panel full">
@@ -2559,6 +2701,135 @@ function ReadinessMeter({ summary }: { summary: ReadinessSummary }) {
   );
 }
 
+function SelectedFolderCard({
+  tone,
+  installLabel,
+  folderPath,
+  freeSpaceLabel,
+  onOpen,
+  onChange,
+  disabled
+}: {
+  tone: string;
+  installLabel: string;
+  folderPath: string;
+  freeSpaceLabel: string;
+  onOpen: () => void | Promise<void>;
+  onChange: () => void | Promise<void>;
+  disabled: boolean;
+}) {
+  return (
+    <div className={`install-summary guided-folder-summary ${tone}`}>
+      <HardDrive size={18} />
+      <span>
+        <strong>{installLabel}</strong>
+        <small>{folderPath}</small>
+        <small>{freeSpaceLabel}</small>
+      </span>
+      <button className="secondary slim" type="button" onClick={() => void onOpen()}>
+        <FolderOpen size={16} />
+        Open
+      </button>
+      <button className="secondary slim" type="button" onClick={() => void onChange()} disabled={disabled}>
+        <RotateCcw size={16} />
+        Change Folder
+      </button>
+    </div>
+  );
+}
+
+function SetupChoicePanel({
+  detected,
+  detectedSetupLabel,
+  createShortcut,
+  onCreateShortcutChange,
+  onUseExisting,
+  onCreateCopy,
+  onBrowse,
+  onDecline,
+  disabled
+}: {
+  detected: DetectedGame | null;
+  detectedSetupLabel: string;
+  createShortcut: boolean;
+  onCreateShortcutChange: (value: boolean) => void;
+  onUseExisting: () => void | Promise<void>;
+  onCreateCopy: () => void | Promise<void>;
+  onBrowse: () => void | Promise<void>;
+  onDecline: () => void | Promise<void>;
+  disabled: boolean;
+}) {
+  const hasDetectedGame = Boolean(detected?.found);
+  const browseLabel = hasDetectedGame ? "Browse different folder" : "Choose game folder";
+  const browseHelp = hasDetectedGame
+    ? "Choose a specific 7 Days to Die folder on this PC."
+    : "Browse to the folder that contains 7DaysToDie.exe.";
+
+  return (
+    <div className="setup-panel">
+      <div className="setup-heading">
+        <div>
+          <span className="section-label">Game Setup</span>
+          <strong>{hasDetectedGame ? "Choose how GDG should prepare 7 Days to Die." : "Choose your 7 Days to Die folder."}</strong>
+          <p>
+            {hasDetectedGame
+              ? "A GDG copy is safest for most players. It creates a separate folder beside the detected game and starts with a clean Mods folder."
+              : "GDG could not find the game automatically. Pick the folder you want Make Me Ready to prepare."}
+          </p>
+          {hasDetectedGame && <small>{detectedSetupLabel}: {detected?.path}</small>}
+          {detected?.isGdgCopy && <small>This already looks like a GDG copy. Browse for your Steam install if you want to overwrite vanilla.</small>}
+        </div>
+      </div>
+
+      <div className="setup-options">
+        {hasDetectedGame && (
+          <>
+            <button className="setup-option overwrite" type="button" onClick={() => void onUseExisting()} disabled={disabled}>
+              <AlertTriangle size={20} />
+              <span>
+                <strong>{detected?.isGdgCopy ? "Use detected GDG copy" : "Use existing game"}</strong>
+                <small>
+                  {detected?.isGdgCopy
+                    ? "Select the detected modded copy. This will not point at your vanilla Steam folder."
+                    : "Use your current 7 Days to Die folder. GDG mods will be installed into this game."}
+                </small>
+              </span>
+            </button>
+            <button className="setup-option copy" type="button" onClick={() => void onCreateCopy()} disabled={disabled}>
+              <Copy size={20} />
+              <span>
+                <strong>Create GDG copy <em>Recommended</em></strong>
+                <small>Make a separate folder named 7 Days To Die - GDG with a clean Mods folder.</small>
+              </span>
+            </button>
+          </>
+        )}
+        <button className="setup-option browse" type="button" onClick={() => void onBrowse()} disabled={disabled}>
+          <FolderOpen size={20} />
+          <span>
+            <strong>{browseLabel}</strong>
+            <small>{browseHelp}</small>
+          </span>
+        </button>
+        <button className="setup-option decline" type="button" onClick={() => void onDecline()} disabled={disabled}>
+          <XCircle size={20} />
+          <span>
+            <strong>Choose later</strong>
+            <small>Skip setup for now. You can browse for a folder or change setup later.</small>
+          </span>
+        </button>
+      </div>
+
+      {hasDetectedGame && (
+        <label className="shortcut-toggle">
+          <input type="checkbox" checked={createShortcut} onChange={(event) => onCreateShortcutChange(event.target.checked)} />
+          <span>Create desktop shortcut for the GDG copy</span>
+        </label>
+      )}
+    </div>
+  );
+}
+
 function GuideCard({
   action
 }: {
@@ -2778,8 +3049,7 @@ function getGameVersionForBuild(buildId: string, versionMap: Record<string, stri
 }
 
 function isRecommendedServer(server: DirectoryServer) {
-  const label = `${server.id} ${server.name}`.toLowerCase();
-  return label.includes("test");
+  return server.recommended === true;
 }
 
 function readCleanupPreference(): CleanupPreference {

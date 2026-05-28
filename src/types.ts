@@ -207,6 +207,7 @@ export type DirectoryServer = {
   gamePort?: number;
   queryPort?: number;
   syncUrl: string;
+  recommended?: boolean;
 };
 
 export type ServerDirectory = {

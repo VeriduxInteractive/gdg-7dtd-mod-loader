@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const crypto = require("node:crypto");
 const dgram = require("node:dgram");
+const net = require("node:net");
 const os = require("node:os");
 const { spawn } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
@@ -349,34 +350,20 @@ function updateApplicationMenu() {
             void createSupportBundleFromMenu();
           }
         },
+        {
+          label: "Open Support Bundle Folder",
+          click: () => {
+            void openSupportBundlesFolderFromMenu();
+          }
+        },
+        {
+          label: "Clean Up Support Bundle Folder...",
+          click: () => {
+            void cleanSupportBundlesFolderFromMenu();
+          }
+        },
         { type: "separator" },
         { role: "quit" }
-      ]
-    },
-    {
-      label: "Edit",
-      submenu: [
-        { role: "undo" },
-        { role: "redo" },
-        { type: "separator" },
-        { role: "cut" },
-        { role: "copy" },
-        { role: "paste" },
-        { role: "selectAll" }
-      ]
-    },
-    {
-      label: "View",
-      submenu: [
-        { role: "reload" },
-        { role: "forceReload" },
-        { role: "toggleDevTools" },
-        { type: "separator" },
-        { role: "resetZoom" },
-        { role: "zoomIn" },
-        { role: "zoomOut" },
-        { type: "separator" },
-        { role: "togglefullscreen" }
       ]
     },
     {
@@ -424,6 +411,92 @@ async function openDiagnosticLog() {
     await fsp.writeFile(logPath, "GDG Mod Loader diagnostic log\n", "utf8");
   }
   await shell.openPath(logPath);
+}
+
+function getSupportBundlesFolder() {
+  return path.join(app.getPath("userData"), "support-bundles");
+}
+
+async function openSupportBundlesFolder() {
+  const folderPath = getSupportBundlesFolder();
+  await fsp.mkdir(folderPath, { recursive: true });
+  const result = await shell.openPath(folderPath);
+  if (result) {
+    throw new Error(result);
+  }
+}
+
+async function openSupportBundlesFolderFromMenu() {
+  try {
+    await openSupportBundlesFolder();
+  } catch (error) {
+    await appendDiagnosticLog("menu:open-support-bundles-folder", error);
+    await dialog.showMessageBox(mainWindow, {
+      type: "error",
+      title: "Support folder failed",
+      message: "The support bundle folder could not be opened.",
+      detail: error.message || String(error)
+    });
+  }
+}
+
+async function cleanSupportBundlesFolderFromMenu() {
+  try {
+    const folderPath = getSupportBundlesFolder();
+    await fsp.mkdir(folderPath, { recursive: true });
+    const entries = await fsp.readdir(folderPath, { withFileTypes: true });
+    const zipFiles = entries.filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".zip"));
+
+    if (zipFiles.length === 0) {
+      await dialog.showMessageBox(mainWindow, {
+        type: "info",
+        title: "Support bundle folder is clean",
+        message: "No support bundle ZIP files were found."
+      });
+      return;
+    }
+
+    const choice = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: ["Delete ZIP Files", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      title: "Clean up support bundles",
+      message: `Delete ${zipFiles.length} support bundle ZIP file${zipFiles.length === 1 ? "" : "s"}?`,
+      detail: `This only deletes ZIP files in:\n${folderPath}`
+    });
+
+    if (choice.response !== 0) {
+      return;
+    }
+
+    let deleted = 0;
+    const resolvedFolder = path.resolve(folderPath);
+    for (const entry of zipFiles) {
+      const filePath = path.join(folderPath, entry.name);
+      const resolvedPath = path.resolve(filePath);
+      const relativePath = path.relative(resolvedFolder, resolvedPath);
+      if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+        continue;
+      }
+      await fsp.rm(resolvedPath, { force: true });
+      deleted += 1;
+    }
+
+    await dialog.showMessageBox(mainWindow, {
+      type: "info",
+      title: "Support bundles cleaned",
+      message: `Deleted ${deleted} support bundle ZIP file${deleted === 1 ? "" : "s"}.`
+    });
+  } catch (error) {
+    await appendDiagnosticLog("menu:clean-support-bundles-folder", error);
+    await dialog.showMessageBox(mainWindow, {
+      type: "error",
+      title: "Support cleanup failed",
+      message: "The support bundle folder could not be cleaned.",
+      detail: error.message || String(error)
+    });
+  }
 }
 
 async function createSupportBundleFromMenu() {
@@ -518,8 +591,8 @@ async function copyFileToClipboard(filePath) {
 async function createSupportBundle(onProgress = () => {}) {
   const createdAt = new Date();
   const timestamp = createdAt.toISOString().replace(/[:.]/g, "-");
-  const folderPath = path.join(app.getPath("userData"), "support-bundles");
-  const fileName = `GDG-Mod-Loader-support-${timestamp}.zip`;
+  const folderPath = getSupportBundlesFolder();
+  const fileName = `GDG-Support-Bundle-${timestamp}.zip`;
   const bundlePath = path.join(folderPath, fileName);
   const zip = new AdmZip();
   const errors = [];
@@ -3336,8 +3409,9 @@ async function checkGameServerStatus(server) {
   const host = String(server?.host || "").trim();
   const gamePort = Number(server?.gamePort || 26900);
   const queryPort = Number(server?.queryPort || gamePort + 1);
+  const hasGamePort = Number.isFinite(gamePort) && gamePort > 0;
 
-  if (!host || !Number.isFinite(queryPort) || queryPort <= 0) {
+  if (!host || (!hasGamePort && (!Number.isFinite(queryPort) || queryPort <= 0))) {
     return {
       gameOk: false,
       gameStatus: "unknown",
@@ -3346,22 +3420,71 @@ async function checkGameServerStatus(server) {
     };
   }
 
+  const errors = [];
+
   try {
-    await querySteamServerInfo(host, queryPort, 900);
-    return {
-      gameOk: true,
-      gameStatus: "online",
-      gameQueryPort: queryPort,
-      gameError: ""
-    };
+    if (Number.isFinite(queryPort) && queryPort > 0) {
+      await querySteamServerInfo(host, queryPort, 1200);
+      return {
+        gameOk: true,
+        gameStatus: "online",
+        gameQueryPort: queryPort,
+        gameError: ""
+      };
+    }
   } catch (error) {
-    return {
-      gameOk: false,
-      gameStatus: "offline",
-      gameQueryPort: queryPort,
-      gameError: error.message
-    };
+    errors.push(`query ${queryPort}: ${error.message}`);
   }
+
+  try {
+    if (hasGamePort) {
+      await probeTcpPort(host, gamePort, 1200);
+      return {
+        gameOk: true,
+        gameStatus: "online",
+        gameQueryPort: queryPort,
+        gameError: errors.length > 0 ? `Steam query did not respond; game port ${gamePort} is reachable.` : ""
+      };
+    }
+  } catch (error) {
+    errors.push(`game ${gamePort}: ${error.message}`);
+  }
+
+  return {
+    gameOk: false,
+    gameStatus: "offline",
+    gameQueryPort: queryPort,
+    gameError: errors.join("; ") || "Game server did not respond."
+  };
+}
+
+function probeTcpPort(host, port, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      finish(new Error("Game port timed out."));
+    }, timeoutMs);
+
+    function finish(error) {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeout);
+      socket.destroy();
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    }
+
+    socket.on("connect", () => finish());
+    socket.on("error", finish);
+  });
 }
 
 function querySteamServerInfo(host, port, timeoutMs) {
@@ -3371,7 +3494,7 @@ function querySteamServerInfo(host, port, timeoutMs) {
     let triedChallenge = false;
 
     const timeout = setTimeout(() => {
-      finish(new Error("Game server query timed out."));
+      finish(new Error("Steam query timed out."));
     }, timeoutMs);
 
     function finish(error) {
@@ -3415,7 +3538,7 @@ function querySteamServerInfo(host, port, timeoutMs) {
         return;
       }
 
-      finish(new Error("Unexpected game server query response."));
+      finish(new Error("Unexpected Steam query response."));
     });
 
     socket.on("error", finish);

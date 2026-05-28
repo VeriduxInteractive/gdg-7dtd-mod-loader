@@ -1,6 +1,6 @@
 {
   "name": "gdg-7dtd-mod-loader",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "private": true,
   "description": "Golden Days Gaming desktop mod loader for syncing 7 Days to Die client mods with a server manifest.",
   "main": "electron/main.cjs",
