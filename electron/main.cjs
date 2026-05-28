@@ -3,6 +3,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const crypto = require("node:crypto");
+const dgram = require("node:dgram");
 const os = require("node:os");
 const { spawn } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
@@ -3221,14 +3222,18 @@ async function loadServerDirectory(input) {
 }
 
 async function checkServerHealth(server) {
+  const gameStatusPromise = checkGameServerStatus(server);
+
   try {
     const manifest = await loadManifest(server.syncUrl);
     validateManifest(manifest);
     const clientMods = (manifest.mods || []).filter(isClientInstallableManifestMod);
+    const gameStatus = await gameStatusPromise;
     return {
       serverId: server.id,
       ok: true,
       status: "online",
+      ...gameStatus,
       modCount: clientMods.length,
       blockedServerOnlyCount: (manifest.mods || []).length - clientMods.length,
       generatedAt: manifest.generatedAt || "",
@@ -3240,10 +3245,12 @@ async function checkServerHealth(server) {
       ...getManifestSizeSummary(manifest)
     };
   } catch (error) {
+    const gameStatus = await gameStatusPromise;
     return {
       serverId: server.id,
       ok: false,
       status: "offline",
+      ...gameStatus,
       modCount: 0,
       generatedAt: "",
       serverName: server.name,
@@ -3255,6 +3262,97 @@ async function checkServerHealth(server) {
       error: error.message
     };
   }
+}
+
+async function checkGameServerStatus(server) {
+  const host = String(server?.host || "").trim();
+  const gamePort = Number(server?.gamePort || 26900);
+  const queryPort = Number(server?.queryPort || gamePort + 1);
+
+  if (!host || !Number.isFinite(queryPort) || queryPort <= 0) {
+    return {
+      gameOk: false,
+      gameStatus: "unknown",
+      gameQueryPort: 0,
+      gameError: "No game server query endpoint published."
+    };
+  }
+
+  try {
+    await querySteamServerInfo(host, queryPort, 900);
+    return {
+      gameOk: true,
+      gameStatus: "online",
+      gameQueryPort: queryPort,
+      gameError: ""
+    };
+  } catch (error) {
+    return {
+      gameOk: false,
+      gameStatus: "offline",
+      gameQueryPort: queryPort,
+      gameError: error.message
+    };
+  }
+}
+
+function querySteamServerInfo(host, port, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const socket = dgram.createSocket("udp4");
+    let settled = false;
+    let triedChallenge = false;
+
+    const timeout = setTimeout(() => {
+      finish(new Error("Game server query timed out."));
+    }, timeoutMs);
+
+    function finish(error) {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeout);
+      socket.close();
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    }
+
+    function sendInfo(challenge = Buffer.alloc(0)) {
+      const query = Buffer.concat([
+        Buffer.from([0xff, 0xff, 0xff, 0xff, 0x54]),
+        Buffer.from("Source Engine Query\0", "binary"),
+        challenge
+      ]);
+      socket.send(query, port, host, (error) => {
+        if (error) {
+          finish(error);
+        }
+      });
+    }
+
+    socket.on("message", (message) => {
+      const responseType = message[4];
+      if (responseType === 0x41 && message.length >= 9 && !triedChallenge) {
+        triedChallenge = true;
+        sendInfo(message.subarray(5, 9));
+        return;
+      }
+
+      if (responseType === 0x49 || responseType === 0x6d) {
+        finish();
+        return;
+      }
+
+      finish(new Error("Unexpected game server query response."));
+    });
+
+    socket.on("error", finish);
+    sendInfo();
+  });
 }
 
 async function getDiskSpace(gamePath) {

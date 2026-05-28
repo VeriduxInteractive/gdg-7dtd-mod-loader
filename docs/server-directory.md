@@ -28,13 +28,16 @@ Example:
 }
 ```
 
-The launcher currently checks sync health by loading each server's `syncUrl`.
+The launcher checks two separate statuses:
+
+- Mod sync health by loading each server's `syncUrl`
+- Game server reachability by querying `queryPort`, or `gamePort + 1` when `queryPort` is not listed
 
 Status values:
 
-- `Sync online`: manifest loaded successfully
-- `Sync offline`: manifest could not be reached
+- `Sync available`: manifest loaded successfully
+- `Sync unavailable`: manifest could not be reached
+- `Game server online`: the game query endpoint responded
+- `Game server offline`: the game query endpoint did not respond before timeout
+- `Game server unknown`: the directory did not publish a usable game query endpoint
 - `Checking`: status request is in progress
-
-The first implementation does not query live 7DTD player counts yet. That can be added after confirming the game query ports are reachable from players' machines.
-

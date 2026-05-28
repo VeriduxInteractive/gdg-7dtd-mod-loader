@@ -219,6 +219,10 @@ export type ServerHealth = {
   serverId: string;
   ok: boolean;
   status: "online" | "offline";
+  gameOk: boolean;
+  gameStatus: "online" | "offline" | "unknown";
+  gameQueryPort?: number;
+  gameError?: string;
   modCount: number;
   blockedServerOnlyCount?: number;
   downloadBytes: number;

@@ -62,6 +62,54 @@ type Tab = "sync" | "installed" | "settings";
 type LivePlanStatus = "active" | "ready" | "failed";
 type GuidedStepId = "setup" | "check" | "install" | "launch";
 type PlanFilter = "all" | SyncAction | "managed";
+type CleanupPreference = "ask" | "backup" | "delete";
+type GuideAction = {
+  title: string;
+  detail: string;
+  label: string;
+  icon: React.ReactNode;
+  tone: string;
+  onClick: () => void | Promise<void>;
+  disabled?: boolean;
+  primaryLabel?: string;
+  primaryTone?: "danger";
+  workingLabel?: string;
+  previewText?: string;
+  secondaryAction?: {
+    label: string;
+    icon: React.ReactNode;
+    tone?: "danger" | "neutral";
+    onClick: () => void | Promise<void>;
+    disabled?: boolean;
+  };
+  detailsAction?: {
+    label: string;
+    icon: React.ReactNode;
+    onClick: () => void | Promise<void>;
+    disabled?: boolean;
+  };
+  preference?: {
+    value: CleanupPreference;
+    onChange: (preference: CleanupPreference) => void;
+  };
+};
+type ProblemCardInfo = GuideAction & {
+  key: string;
+};
+type ReadinessSummary = {
+  title: string;
+  detail: string;
+  value: string;
+  tone: string;
+};
+
+const cleanupPreferenceOptions: Array<{ value: CleanupPreference; label: string }> = [
+  { value: "ask", label: "Always ask me" },
+  { value: "backup", label: "Always backup" },
+  { value: "delete", label: "Always remove" }
+];
+
+const cleanupPreferenceKey = "gdg.cleanupPreference";
 
 function App() {
   const [config, setConfig] = useState<LoaderConfig>(emptyConfig);
@@ -70,6 +118,7 @@ function App() {
   const [preview, setPreview] = useState<SyncPreview | null>(null);
   const [applyResult, setApplyResult] = useState<ApplyResult | null>(null);
   const [supportBundle, setSupportBundle] = useState<{ path: string; folderPath: string; fileName: string } | null>(null);
+  const [supportMessage, setSupportMessage] = useState("");
   const [doctor, setDoctor] = useState<DoctorResult | null>(null);
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [serverDirectory, setServerDirectory] = useState<ServerDirectory | null>(null);
@@ -87,9 +136,12 @@ function App() {
   const [livePlanStatuses, setLivePlanStatuses] = useState<Record<string, LivePlanStatus>>({});
   const [planFilter, setPlanFilter] = useState<PlanFilter>("all");
   const [openStep, setOpenStep] = useState<GuidedStepId | "">("setup");
+  const [advancedMode, setAdvancedMode] = useState(false);
+  const [cleanupPreference, setCleanupPreference] = useState<CleanupPreference>(readCleanupPreference);
   const progressPanelRef = useRef<HTMLElement | null>(null);
   const lastAutoScrolledProgressKey = useRef("");
   const lastVersionPromptKey = useRef("");
+  const lastAutoCheckKey = useRef("");
 
   useEffect(() => {
     void initialize();
@@ -337,6 +389,18 @@ function App() {
     return saved;
   }
 
+  function updateCleanupPreference(preference: CleanupPreference) {
+    setCleanupPreference(preference);
+    writeCleanupPreference(preference);
+  }
+
+  function showPlanDetails(filter: PlanFilter) {
+    setAdvancedMode(true);
+    setActiveTab("sync");
+    setOpenStep("install");
+    setPlanFilter(filter);
+  }
+
   function clearSyncState(clearProgress = true) {
     setPreview(null);
     setApplyResult(null);
@@ -385,9 +449,41 @@ function App() {
     await runTask("Checking servers", async () => {
       const directory = await loadDirectory(config.serverDirectoryInput);
       const healthById = (directory as ServerDirectory & { healthById?: Record<string, ServerHealth> }).healthById || {};
-      const onlineCount = directory.servers.filter((server) => healthById[server.id]?.ok).length;
-      return `${onlineCount} of ${directory.servers.length} GDG server${directory.servers.length === 1 ? "" : "s"} online`;
+      const syncCount = directory.servers.filter((server) => healthById[server.id]?.ok).length;
+      const gameCount = directory.servers.filter((server) => healthById[server.id]?.gameStatus === "online").length;
+      return `${syncCount} sync feed${syncCount === 1 ? "" : "s"} available - ${gameCount} game server${gameCount === 1 ? "" : "s"} online`;
     });
+  }
+
+  async function refreshPreviewAfterAction(fallbackPreview?: SyncPreview | null) {
+    if (!config.gamePath || !config.manifestInput) {
+      if (fallbackPreview) {
+        setPreview(fallbackPreview);
+        setScan(fallbackPreview.local);
+      }
+      return;
+    }
+
+    try {
+      const nextPreview = await window.gdg.previewSync({
+        gamePath: config.gamePath,
+        manifestInput: config.manifestInput
+      });
+      setLivePlanStatuses({});
+      setPreview(nextPreview);
+      setScan(nextPreview.local);
+      const doctorResult = await window.gdg.runDoctor({
+        gamePath: config.gamePath,
+        manifestInput: config.manifestInput,
+        launchWithEac: config.launchWithEac
+      });
+      setDoctor(doctorResult);
+    } catch {
+      if (fallbackPreview) {
+        setPreview(fallbackPreview);
+        setScan(fallbackPreview.local);
+      }
+    }
   }
 
   async function selectServer(server: DirectoryServer) {
@@ -529,7 +625,7 @@ function App() {
   }
 
   async function runPreflightDoctor() {
-    await runTask("Running doctor", async () => {
+    await runTask("Checking setup", async () => {
       const result = await window.gdg.runDoctor({
         gamePath: config.gamePath,
         manifestInput: config.manifestInput,
@@ -541,11 +637,11 @@ function App() {
         setScan(result.preview.local);
       }
       setOpenStep(result.ok ? "install" : "check");
-      return result.ok ? "Preflight checks passed" : "Preflight needs attention";
+      return result.ok ? "Setup checks passed" : "Setup needs attention";
     });
   }
 
-  async function previewSync() {
+  async function previewSync(options: { promptSteam?: boolean } = {}) {
     setSyncProgress({
       phase: "scanning",
       message: "Checking your Mods folder against the server list.",
@@ -576,7 +672,7 @@ function App() {
         setError(`${result.gameCompatibility.reason} Update 7 Days to Die in Steam before installing GDG mods.`);
         setMessage("Game update needed");
 
-        if (lastVersionPromptKey.current !== promptKey) {
+        if (options.promptSteam !== false && lastVersionPromptKey.current !== promptKey) {
           lastVersionPromptKey.current = promptKey;
           window.setTimeout(() => {
             const shouldOpenSteam = window.confirm(`${result.gameCompatibility.reason}\n\nOpen 7 Days to Die in Steam now so you can update it?`);
@@ -681,22 +777,20 @@ function App() {
         mode
       });
       setApplyResult(result);
-      if (result.preview) {
-        setPreview(result.preview);
-        setScan(result.preview.local);
-      }
+      await refreshPreviewAfterAction(result.preview);
       await refreshBackups();
       setActiveTab("sync");
 
       if (result.canceled) {
-        setMessage("Clean canceled");
+        return "Clean canceled";
       } else if (!result.ok) {
         setError(`${result.failedCount || 1} local-only mod${result.failedCount === 1 ? "" : "s"} could not be ${mode === "delete" ? "deleted" : "moved"}. Check the log below.`);
+        return "Needs attention";
       } else if (mode === "delete") {
-        setMessage("Local-only mods deleted");
-      } else {
-        setMessage("Local-only mods moved to backup");
+        return "Local-only mods removed. Next step updated.";
       }
+
+      return "Done. Your mods were kept in a backup.";
     });
   }
 
@@ -767,13 +861,7 @@ function App() {
         scope
       });
       setApplyResult(result);
-      if (result.preview) {
-        setPreview(result.preview);
-        setScan(result.preview.local);
-      } else {
-        const nextScan = await window.gdg.scanMods(config.gamePath);
-        setScan(nextScan);
-      }
+      await refreshPreviewAfterAction(result.preview);
       await refreshBackups();
       setActiveTab("sync");
 
@@ -786,7 +874,7 @@ function App() {
         return "Needs attention";
       }
 
-      return mode === "delete" ? "GDG-managed mods deleted" : "GDG-managed mods moved to backup";
+      return mode === "delete" ? "GDG-managed mods removed. Next step updated." : "Done. Your mods were kept in a backup.";
     });
   }
 
@@ -828,24 +916,28 @@ function App() {
   }
 
   async function restoreBackup(backup: BackupEntry) {
+    await restoreBackupPath(backup.path, backup.itemCount, "installed");
+  }
+
+  async function restoreBackupPath(backupPath: string, itemCount = 1, nextTab: Tab = "sync") {
     setSyncProgress({
       phase: "preparing",
       message: "Preparing to restore backup.",
       current: 0,
-      total: Math.max(backup.itemCount, 1),
+      total: Math.max(itemCount, 1),
       percent: 0
     });
 
     await runTask("Restoring backup", async () => {
       const result = await window.gdg.restoreBackup({
         gamePath: config.gamePath,
-        backupPath: backup.path
+        backupPath
       });
       setApplyResult(result);
       const nextScan = await window.gdg.scanMods(config.gamePath);
       setScan(nextScan);
       await refreshBackups();
-      setActiveTab("installed");
+      setActiveTab(nextTab);
 
       if (result.canceled) {
         return "Restore canceled";
@@ -977,7 +1069,20 @@ function App() {
         folderPath: result.folderPath,
         fileName: result.fileName
       });
-      setMessage("Support bundle created");
+      const nextSupportMessage = [
+        "GDG Mod Loader help request",
+        `Server: ${selectedServerName}`,
+        `Status: ${readinessSummary.title}`,
+        `Game folder: ${config.gamePath ? getFolderName(config.gamePath) : "Not selected"}`,
+        `Support bundle: ${result.path}`
+      ].join("\n");
+      setSupportMessage(nextSupportMessage);
+      try {
+        await navigator.clipboard?.writeText(nextSupportMessage);
+        setMessage("Support bundle created and message copied");
+      } catch {
+        setMessage("Support bundle created");
+      }
     });
   }
 
@@ -1090,11 +1195,353 @@ function App() {
   const doctorWarnings = doctor?.checks.filter((check) => check.status === "warn").length || 0;
   const backupTotalBytes = backups.reduce((total, backup) => total + (backup.sizeBytes || 0), 0);
   const visibleServers = serverDirectory?.servers || [];
-  const onlineServerCount = visibleServers.filter((server) => serverHealth[server.id]?.ok).length;
+  const syncAvailableCount = visibleServers.filter((server) => serverHealth[server.id]?.ok).length;
+  const gameOnlineCount = visibleServers.filter((server) => serverHealth[server.id]?.gameStatus === "online").length;
+  const selectedGameServerStatus = getGameServerStatusLabel(selectedHealth);
+  const recommendedServerId = visibleServers.find(isRecommendedServer)?.id || visibleServers[0]?.id || "";
+  const selectedGameFolderLabel = config.gamePath ? getFolderName(config.gamePath) : detected?.found ? "Choose" : "Missing";
   const setupStepState = config.gamePath ? "done" : "active";
   const checkStepState = preview ? "done" : config.gamePath && config.manifestInput ? "active" : "waiting";
   const installStepState = !preview ? "waiting" : modsToInstall > 0 ? "active" : "done";
   const launchStepState = preview && modsToInstall === 0 && !preview.summary.blocked && !gameVersionMismatch ? "active" : "waiting";
+  const installBlockedByServer = Boolean(preview?.summary.blocked);
+  const showCheckFirstAction = !preview;
+  const showUpdateGameActions = Boolean(preview && gameVersionMismatch);
+  const showLocalCleanupActions = Boolean(preview && localOnlyMods > 0);
+  const showManagedCleanupActions = Boolean(preview && managedExtraMods > 0);
+  const showInstallMissingAction = Boolean(preview && modsToInstall > 0 && !gameVersionMismatch && !installBlockedByServer && !syncSpaceBlocked);
+  const showLaunchStepAction = Boolean(preview && modsToInstall === 0 && localOnlyMods === 0 && managedExtraMods === 0 && !installBlockedByServer && !gameVersionMismatch);
+  const showRepairActions = Boolean(advancedMode && preview && modsToInstall === 0 && repairableMods > 0 && !gameVersionMismatch && !installBlockedByServer && !repairSpaceBlocked);
+  const cleanupMode = cleanupPreference === "delete" ? "delete" : "backup";
+  const cleanupPrimaryLabel = cleanupMode === "delete" ? "Remove Local-Only" : "Move to Backup";
+  const cleanupSecondaryLabel = cleanupMode === "delete" ? "Move to Backup" : "Remove Instead";
+  const cleanupPrimaryIcon = cleanupMode === "delete" ? <Trash2 size={18} /> : <HardDrive size={18} />;
+  const cleanupSecondaryIcon = cleanupMode === "delete" ? <HardDrive size={18} /> : <Trash2 size={18} />;
+  const cleanupProgressLabel = getProgressButtonLabel(syncProgress, cleanupMode === "delete" ? "Removing" : "Moving");
+  const managedCleanupPrimaryLabel = cleanupMode === "delete" ? "Remove Old Mods" : "Move to Backup";
+  const managedCleanupSecondaryLabel = cleanupMode === "delete" ? "Move to Backup" : "Remove Instead";
+  const managedCleanupProgressLabel = getProgressButtonLabel(syncProgress, cleanupMode === "delete" ? "Removing" : "Moving");
+  const guidedAction: GuideAction = !config.gamePath
+    ? detected?.found
+      ? {
+          tone: "gold",
+          title: detected.isGdgCopy ? "Next up: use the GDG copy" : "Next up: create a GDG copy",
+          detail: detected.isGdgCopy ? "Select the detected GDG folder and continue." : "Keep vanilla clean with a separate GDG folder.",
+          label: detected.isGdgCopy ? "Use GDG Copy" : "Create GDG Copy",
+          icon: detected.isGdgCopy ? <FolderOpen size={18} /> : <Copy size={18} />,
+          onClick: detected.isGdgCopy ? useDetectedInstall : createGdgCopy,
+          previewText: detected.isGdgCopy ? "GDG will use the detected game copy for checks, sync, and launch." : "GDG will create a separate 7 Days To Die - GDG folder.",
+          disabled: working
+        }
+      : {
+          tone: "gold",
+          title: "Next up: find 7 Days to Die",
+          detail: "GDG needs the local game folder before it can compare mods.",
+          label: "Detect Game",
+          icon: <Search size={18} />,
+          onClick: detectGame,
+          disabled: working
+        }
+    : !config.manifestInput
+      ? {
+          tone: "warn",
+          title: "Next up: choose a server",
+          detail: "Pick a GDG server so the loader knows which mod list to use.",
+          label: "Open Server Step",
+          icon: <UploadCloud size={18} />,
+          onClick: () => setOpenStep("check"),
+          disabled: working
+        }
+      : !preview
+        ? {
+            tone: "gold",
+            title: "Next up: check server mods",
+            detail: "Compare this folder with the selected GDG server.",
+            label: "Check Server Mods",
+            icon: <ListChecks size={18} />,
+            onClick: previewSync,
+            previewText: "GDG will compare this folder with the selected server. Nothing is installed yet.",
+            disabled: working
+          }
+        : gameVersionMismatch
+          ? {
+              tone: "warn",
+              title: "Next up: update 7 Days to Die",
+              detail: "Steam needs to match the selected GDG server version before install.",
+              label: "Open Steam",
+              icon: <RefreshCw size={18} />,
+              onClick: openSteamUpdate,
+              previewText: "Steam will open so you can update 7 Days to Die to the server version.",
+              disabled: working
+            }
+          : syncSpaceBlocked
+            ? {
+                tone: "danger",
+                title: "Next up: free disk space",
+                detail: `This drive needs about ${formatBytes(syncSpaceRequirement.bytes)} free before syncing.`,
+                label: "Open Game Folder",
+                icon: <FolderOpen size={18} />,
+                onClick: openGameFolder,
+                disabled: working
+              }
+            : installBlockedByServer || skippedServerOnlyMods > 0
+              ? {
+                  tone: "danger",
+                  title: "Next up: send diagnostics",
+                  detail: "The selected server list has an entry the client should not install.",
+                  label: "Create Support Bundle",
+                  icon: <Archive size={18} />,
+                  onClick: createSupportBundle,
+                  previewText: "GDG will create a support zip and copy a short Discord message for staff.",
+                  disabled: working
+                }
+              : localOnlyMods > 0
+                ? {
+                    tone: "warn",
+                    title: "Next up: handle extra local mods",
+                    detail: "Move them to a backup, or remove them if you do not want to keep them.",
+                    label: cleanupPrimaryLabel,
+                    primaryLabel: cleanupPrimaryLabel,
+                    primaryTone: cleanupMode === "delete" ? "danger" : undefined,
+                    icon: cleanupPrimaryIcon,
+                    onClick: () => void cleanLocalMods(cleanupMode),
+                    workingLabel: cleanupProgressLabel,
+                    previewText:
+                      cleanupMode === "delete"
+                        ? `GDG will ask before permanently removing ${localOnlyMods} local-only mod${localOnlyMods === 1 ? "" : "s"} from this PC.`
+                        : `GDG will move ${localOnlyMods} local-only mod${localOnlyMods === 1 ? "" : "s"} out of Mods and keep them in a backup.`,
+                    secondaryAction: {
+                      label: cleanupSecondaryLabel,
+                      icon: cleanupSecondaryIcon,
+                      tone: cleanupMode === "delete" ? "neutral" : "danger",
+                      onClick: () => void cleanLocalMods(cleanupMode === "delete" ? "backup" : "delete"),
+                      disabled: working
+                    },
+                    detailsAction: {
+                      label: `Show ${localOnlyMods} Mod${localOnlyMods === 1 ? "" : "s"}`,
+                      icon: <ListChecks size={18} />,
+                      onClick: () => showPlanDetails("keep"),
+                      disabled: !preview
+                    },
+                    preference: {
+                      value: cleanupPreference,
+                      onChange: updateCleanupPreference
+                    },
+                    disabled: working
+                  }
+                : managedExtraMods > 0
+                  ? {
+                      tone: "warn",
+                      title: "Next up: handle old GDG mods",
+                      detail: "Move old GDG-managed mods to backup, or remove them if you do not want to keep them.",
+                      label: managedCleanupPrimaryLabel,
+                      primaryLabel: managedCleanupPrimaryLabel,
+                      primaryTone: cleanupMode === "delete" ? "danger" : undefined,
+                      icon: cleanupPrimaryIcon,
+                      onClick: () => void cleanManagedMods(cleanupMode, "extra"),
+                      workingLabel: managedCleanupProgressLabel,
+                      previewText:
+                        cleanupMode === "delete"
+                          ? `GDG will ask before permanently removing ${managedExtraMods} old GDG-managed mod${managedExtraMods === 1 ? "" : "s"}.`
+                          : `GDG will move ${managedExtraMods} old GDG-managed mod${managedExtraMods === 1 ? "" : "s"} out of Mods and keep them in a backup.`,
+                      secondaryAction: {
+                        label: managedCleanupSecondaryLabel,
+                        icon: cleanupSecondaryIcon,
+                        tone: cleanupMode === "delete" ? "neutral" : "danger",
+                        onClick: () => void cleanManagedMods(cleanupMode === "delete" ? "backup" : "delete", "extra"),
+                        disabled: working
+                      },
+                      detailsAction: {
+                        label: `Show ${managedExtraMods} Mod${managedExtraMods === 1 ? "" : "s"}`,
+                        icon: <ListChecks size={18} />,
+                        onClick: () => showPlanDetails("managed"),
+                        disabled: !preview
+                      },
+                      preference: {
+                        value: cleanupPreference,
+                        onChange: updateCleanupPreference
+                      },
+                      disabled: working
+                    }
+                  : modsToInstall > 0
+                    ? {
+                        tone: "gold",
+                        title: "Next up: install missing mods",
+                        detail: `${modsToInstall} server change${modsToInstall === 1 ? "" : "s"} ready for this folder.`,
+                        label: "Install Missing Mods",
+                        icon: <Download size={18} />,
+                        onClick: applySync,
+                        workingLabel: getProgressButtonLabel(syncProgress, "Installing"),
+                        previewText: `GDG will install ${modsToInstall} server change${modsToInstall === 1 ? "" : "s"} and back up anything it replaces.`,
+                        detailsAction: {
+                          label: "Show Changes",
+                          icon: <ListChecks size={18} />,
+                          onClick: () => showPlanDetails("all"),
+                          disabled: !preview
+                        },
+                        disabled: working
+                      }
+                    : eacWarning && typeof serverEacEnabled === "boolean" && serverEacEnabled !== Boolean(config.launchWithEac)
+                      ? {
+                          tone: "warn",
+                          title: "Next up: match EAC",
+                          detail: `The selected server launches with EAC ${serverEacEnabled ? "on" : "off"}.`,
+                          label: `Set EAC ${serverEacEnabled ? "On" : "Off"}`,
+                          icon: serverEacEnabled ? <ShieldCheck size={18} /> : <ShieldOff size={18} />,
+                          onClick: () => void updateLaunchWithEac(Boolean(serverEacEnabled)),
+                          disabled: working
+                        }
+                      : eacWarning && hasDllMods && config.launchWithEac
+                        ? {
+                            tone: "warn",
+                            title: "Next up: turn EAC off",
+                            detail: "DLL mods are installed in this folder.",
+                            label: "Set EAC Off",
+                            icon: <ShieldOff size={18} />,
+                            onClick: () => void updateLaunchWithEac(false),
+                            disabled: working
+                          }
+                        : {
+                            tone: "ready",
+                            title: "Ready to play",
+                            detail: "This folder matches the selected GDG server.",
+                            label: "Launch Game",
+                            primaryLabel: "Launch Game",
+                            icon: <Play size={18} />,
+                            onClick: launchGame,
+                            disabled: working
+                          };
+  const problemCards: ProblemCardInfo[] = [];
+  if (!config.gamePath) {
+    problemCards.push({
+      key: "game-folder",
+      tone: "gold",
+      title: "Game folder needed",
+      detail: detected?.found ? "Use the detected install or create a separate GDG copy." : "GDG needs to find 7 Days to Die on this PC.",
+      label: detected?.found ? "Choose Folder" : "Detect Game",
+      icon: detected?.found ? <FolderOpen size={18} /> : <Search size={18} />,
+      onClick: detected?.found ? () => setOpenStep("setup") : detectGame,
+      disabled: working
+    });
+  }
+  if (preview && gameVersionMismatch) {
+    problemCards.push({
+      key: "game-version",
+      tone: "warn",
+      title: "Steam update needed",
+      detail: gameCompatibility?.reason || "Your game version does not match this server.",
+      label: "Open Steam",
+      icon: <RefreshCw size={18} />,
+      onClick: openSteamUpdate,
+      disabled: working
+    });
+  }
+  if (syncSpaceBlocked && diskSpace) {
+    problemCards.push({
+      key: "space",
+      tone: "danger",
+      title: "Not enough disk space",
+      detail: `Free up space on this drive. GDG needs about ${formatBytes(syncSpaceRequirement.bytes)} free.`,
+      label: "Open Folder",
+      icon: <FolderOpen size={18} />,
+      onClick: openGameFolder,
+      disabled: working
+    });
+  }
+  if (preview && (installBlockedByServer || skippedServerOnlyMods > 0)) {
+    problemCards.push({
+      key: "server-list",
+      tone: "danger",
+      title: "Server mod list issue",
+      detail: "This server is asking the player app to install something it should not install.",
+      label: "Send Help to GDG",
+      icon: <Archive size={18} />,
+      onClick: createSupportBundle,
+      disabled: working
+    });
+  }
+  if (preview && localOnlyMods > 0) {
+    problemCards.push({
+      key: "local-only",
+      tone: "warn",
+      title: "Extra mods found",
+      detail: `${localOnlyMods} mod${localOnlyMods === 1 ? " is" : "s are"} not part of this GDG server. Backing them up is safest.`,
+      label: "Move to Backup",
+      icon: <HardDrive size={18} />,
+      onClick: () => void cleanLocalMods("backup"),
+      disabled: working
+    });
+  }
+  if (preview && managedExtraMods > 0) {
+    problemCards.push({
+      key: "managed-extra",
+      tone: "warn",
+      title: "Old GDG mods found",
+      detail: `${managedExtraMods} GDG-managed mod${managedExtraMods === 1 ? " is" : "s are"} from a different server package.`,
+      label: "Move to Backup",
+      icon: <HardDrive size={18} />,
+      onClick: () => void cleanManagedMods("backup", "extra"),
+      disabled: working
+    });
+  }
+  if (preview && eacMismatch && typeof serverEacEnabled === "boolean") {
+    problemCards.push({
+      key: "eac-server",
+      tone: "warn",
+      title: "EAC setting mismatch",
+      detail: `This server expects EAC ${serverEacEnabled ? "on" : "off"}.`,
+      label: `Set EAC ${serverEacEnabled ? "On" : "Off"}`,
+      icon: serverEacEnabled ? <ShieldCheck size={18} /> : <ShieldOff size={18} />,
+      onClick: () => void updateLaunchWithEac(Boolean(serverEacEnabled)),
+      disabled: working
+    });
+  } else if (preview && hasDllMods && config.launchWithEac) {
+    problemCards.push({
+      key: "eac-dll",
+      tone: "warn",
+      title: "EAC should be off",
+      detail: "DLL mods are installed in this folder. Launching with EAC off is safer.",
+      label: "Set EAC Off",
+      icon: <ShieldOff size={18} />,
+      onClick: () => void updateLaunchWithEac(false),
+      disabled: working
+    });
+  }
+  const readyToPlay = Boolean(preview && modsToInstall === 0 && problemCards.length === 0 && !gameVersionMismatch && !installBlockedByServer);
+  const readinessSummary: ReadinessSummary = !config.gamePath
+    ? {
+        tone: "warn",
+        title: "Needs game folder",
+        detail: "Use Make Me Ready to find or create the folder GDG will launch.",
+        value: "1 step"
+      }
+    : !preview
+      ? {
+          tone: working ? "blue" : "gold",
+          title: working ? "Checking" : "Ready to check",
+          detail: "GDG will compare this folder with the selected server automatically.",
+          value: working ? "..." : "Check"
+        }
+      : problemCards.length > 0
+        ? {
+            tone: problemCards.some((card) => card.tone === "danger") ? "danger" : "warn",
+            title: `${problemCards.length} fix${problemCards.length === 1 ? "" : "es"} needed`,
+            detail: "Use Make Me Ready or the fix cards below.",
+            value: String(problemCards.length)
+          }
+        : modsToInstall > 0
+          ? {
+              tone: "gold",
+              title: "Mods ready to install",
+              detail: `${modsToInstall} server change${modsToInstall === 1 ? "" : "s"} will be installed.`,
+              value: String(modsToInstall)
+            }
+          : {
+              tone: "ready",
+              title: "Ready to play",
+              detail: `${selectedServerName} matches ${selectedGameFolderLabel}.`,
+              value: "Ready"
+            };
 
   function selectPlanFilter(filter: PlanFilter) {
     setPlanFilter((current) => (current === filter ? "all" : filter));
@@ -1111,6 +1558,24 @@ function App() {
       setOpenStep("launch");
     }
   }, [config.gamePath, preview, modsToInstall, localOnlyMods]);
+
+  useEffect(() => {
+    if (!config.gamePath || !config.manifestInput || preview || working) {
+      return;
+    }
+
+    const autoCheckKey = `${config.gamePath}|${config.manifestInput}`;
+    if (lastAutoCheckKey.current === autoCheckKey) {
+      return;
+    }
+
+    lastAutoCheckKey.current = autoCheckKey;
+    const timer = window.setTimeout(() => {
+      void previewSync({ promptSteam: false });
+    }, 600);
+
+    return () => window.clearTimeout(timer);
+  }, [config.gamePath, config.manifestInput, preview, working]);
 
   return (
     <main
@@ -1141,7 +1606,7 @@ function App() {
             <div>
               <div className="section-label">GDG Servers</div>
               <small className="server-list-summary">
-                {visibleServers.length > 0 ? `${onlineServerCount} of ${visibleServers.length} online` : "Checking servers"}
+                {visibleServers.length > 0 ? `${syncAvailableCount} sync feed${syncAvailableCount === 1 ? "" : "s"} - ${gameOnlineCount} game online` : "Checking servers"}
               </small>
             </div>
             <button className="mini-icon" type="button" onClick={refreshServerDirectory} title="Refresh server status">
@@ -1151,18 +1616,24 @@ function App() {
           {visibleServers.map((server) => {
             const health = serverHealth[server.id];
             const active = selectedServer?.id === server.id;
+            const recommended = server.id === recommendedServerId;
 
             return (
-              <button className={`server-profile ${active ? "active" : ""}`} type="button" key={server.id} onClick={() => void selectServer(server)}>
+              <button className={`server-profile ${active ? "active" : ""} ${recommended ? "recommended" : ""}`} type="button" key={server.id} onClick={() => void selectServer(server)}>
                 <Server size={18} />
                 <span>
                   <strong>{server.name}</strong>
                   <small>{server.host}:{server.gamePort || 26900}</small>
+                  <small className={getGameServerStatusClass(health)}>
+                    {getGameServerStatusLabel(health)}
+                  </small>
                   <small className={health?.ok ? "sync-online" : "sync-offline"}>
-                    {health ? (health.ok ? `Sync online - ${health.modCount} mods - ${formatKnownBytes(health.installedBytes, health.installedSizeKnown)}` : "Sync offline") : "Checking sync"}
+                    {health ? (health.ok ? `Sync available - ${health.modCount} mods - ${formatKnownBytes(health.installedBytes, health.installedSizeKnown)}` : "Sync unavailable") : "Checking sync"}
                   </small>
                   <span className="server-badges">
+                    {recommended && <em className="recommended">Recommended</em>}
                     <em>{getServerKindLabel(server)}</em>
+                    <em className={getGameServerBadgeClass(health)}>{getGameServerBadgeLabel(health)}</em>
                     <em>{getServerVersionLabel(health)}</em>
                     <em>EAC {typeof health?.eacEnabled === "boolean" ? (health.eacEnabled ? "On" : "Off") : "?"}</em>
                     <em>{health?.ok ? formatKnownBytes(health.installedBytes, health.installedSizeKnown) : "Size ?"}</em>
@@ -1179,12 +1650,13 @@ function App() {
           </div>
           <div className="status-group" aria-label="Game status">
             <span className="status-group-title">Game</span>
-            <StatusRow icon={<Gamepad2 size={17} />} label="Folder" value={config.gamePath ? "Selected" : detected?.found ? "Choose" : "Missing"} />
+            <StatusRow icon={<Gamepad2 size={17} />} label="Folder" value={selectedGameFolderLabel} />
             <StatusRow icon={<RefreshCw size={17} />} label="Version" value={localGameVersionLabel} />
           </div>
           <div className="status-group" aria-label="Server status">
             <span className="status-group-title">Server</span>
-            <StatusRow icon={<UploadCloud size={17} />} label="Sync" value={selectedHealth?.ok ? "Online" : config.manifestInput ? "Selected" : "Missing"} />
+            <StatusRow icon={<Server size={17} />} label="Game server" value={selectedGameServerStatus} />
+            <StatusRow icon={<UploadCloud size={17} />} label="Mod sync" value={selectedHealth?.ok ? "Available" : config.manifestInput ? "Unavailable" : "Missing"} />
             <StatusRow icon={<RefreshCw size={17} />} label="Version" value={serverVersionLabel} />
             <StatusRow icon={serverEacEnabled ? <ShieldCheck size={17} /> : <ShieldOff size={17} />} label="EAC" value={serverEacLabel} />
           </div>
@@ -1243,20 +1715,66 @@ function App() {
         )}
 
         {activeTab === "sync" && (
-          <div className="content-grid">
+          <div className={`content-grid ${advancedMode ? "advanced-layout" : "tester-layout"}`}>
             <section className="panel wide">
               <div className="panel-heading">
                 <div>
                   <span className="section-label">Guided Setup</span>
                   <h3>{selectedServerName}</h3>
-                  <p className="panel-description">Follow these steps from top to bottom. GDG will check your game folder, compare it to the server, then install only what is missing.</p>
+                  <p className="panel-description">Use Make Me Ready for guided setup, or Manual Setup if you want to review each step yourself.</p>
                 </div>
-                <button className="icon-button" type="button" onClick={previewSync} disabled={working || !config.gamePath || !config.manifestInput} title="Check server mods">
-                  <RefreshCw size={18} />
-                </button>
+                <div className="panel-tools">
+                  <button
+                    className={`mode-toggle ${advancedMode ? "active" : ""}`}
+                    type="button"
+                    onClick={() => setAdvancedMode((current) => !current)}
+                    aria-pressed={advancedMode}
+                    title={advancedMode ? "Return to guided setup" : "Open manual setup, mod list, and repair tools"}
+                  >
+                    <Settings size={16} />
+                    {advancedMode ? "Guided Setup" : "Manual Setup"}
+                  </button>
+                  {advancedMode && (
+                    <button className="icon-button" type="button" onClick={() => void previewSync()} disabled={working || !config.gamePath || !config.manifestInput} title="Check server mods">
+                      <RefreshCw size={18} />
+                    </button>
+                  )}
+                </div>
               </div>
 
-              <div className="step-sections">
+              {advancedMode && <ReadinessMeter summary={readinessSummary} />}
+              <GuideCard action={guidedAction} />
+              {advancedMode && problemCards.length > 0 && <ProblemCards cards={problemCards} />}
+              {applyResult?.backupRoot && !advancedMode && (
+                <BackupResultCard
+                  backupRoot={applyResult.backupRoot}
+                  onOpen={() => void window.gdg.openPath(applyResult.backupRoot)}
+                  onRestore={() => void restoreBackupPath(applyResult.backupRoot, 1, "sync")}
+                  disabled={working}
+                />
+              )}
+              {error && !supportBundle && (
+                <SupportHelpCard onSupport={createSupportBundle} disabled={working} />
+              )}
+              {supportBundle && (
+                <SupportResult
+                  bundle={supportBundle}
+                  message={supportMessage}
+                  onOpen={() => void window.gdg.openPath(supportBundle.folderPath)}
+                />
+              )}
+              {advancedMode && readyToPlay && (
+                <ReadyPanel
+                  serverName={selectedServerName}
+                  folderName={selectedGameFolderLabel}
+                  eacLabel={config.launchWithEac ? "On" : "Off"}
+                  onLaunch={launchGame}
+                  disabled={working}
+                />
+              )}
+
+              {advancedMode && (
+                <div className="step-sections">
                 <StepSection
                   number="1"
                   title="Choose Game Folder"
@@ -1352,23 +1870,25 @@ function App() {
                       </div>
                     )}
 
-                    <label>
-                      <span>Game folder</span>
-                      <small className="field-help">This is the 7 Days to Die folder GDG will check, sync, and launch.</small>
-                      <div className="input-row">
-                        <input
-                          value={config.gamePath}
-                          onChange={(event) => void updateGamePath(event.target.value)}
-                          placeholder="C:\Program Files (x86)\Steam\steamapps\common\7 Days To Die"
-                        />
-                        <button type="button" onClick={detectGame} disabled={working} title="Detect game">
-                          <Search size={17} />
-                        </button>
-                        <button type="button" onClick={browseGameFolder} disabled={working} title="Browse game folder">
-                          <FolderOpen size={17} />
-                        </button>
-                      </div>
-                    </label>
+                    {(!config.gamePath || advancedMode) && (
+                      <label>
+                        <span>Game folder</span>
+                        <small className="field-help">This is the 7 Days to Die folder GDG will check, sync, and launch.</small>
+                        <div className="input-row">
+                          <input
+                            value={config.gamePath}
+                            onChange={(event) => void updateGamePath(event.target.value)}
+                            placeholder="C:\Program Files (x86)\Steam\steamapps\common\7 Days To Die"
+                          />
+                          <button type="button" onClick={detectGame} disabled={working} title="Detect game">
+                            <Search size={17} />
+                          </button>
+                          <button type="button" onClick={browseGameFolder} disabled={working} title="Browse game folder">
+                            <FolderOpen size={17} />
+                          </button>
+                        </div>
+                      </label>
+                    )}
                   </div>
                 </StepSection>
 
@@ -1388,7 +1908,7 @@ function App() {
                     {selectedServer && (
                       <div className={`server-status-band ${selectedHealth?.ok ? "online" : "offline"}`}>
                         <Wifi size={18} />
-                        <strong>{selectedHealth?.ok ? "Sync online" : "Sync not confirmed"}</strong>
+                        <strong>{selectedHealth?.ok ? "Sync available" : "Sync not confirmed"}</strong>
                         <span>
                           {selectedHealth?.ok
                             ? `${selectedHealth.modCount} client-safe mods - ${formatKnownBytes(selectedHealth.installedBytes, selectedHealth.installedSizeKnown)}${selectedHealth.generatedAt ? ` - updated ${formatDate(selectedHealth.generatedAt)}` : ""}`
@@ -1420,7 +1940,7 @@ function App() {
                           </button>
                         )}
                         {gameVersionMismatch && (
-                          <button className="secondary slim" type="button" onClick={previewSync} disabled={working || !config.gamePath || !config.manifestInput}>
+                          <button className="secondary slim" type="button" onClick={() => void previewSync()} disabled={working || !config.gamePath || !config.manifestInput}>
                             <ListChecks size={16} />
                             Retry
                           </button>
@@ -1439,25 +1959,58 @@ function App() {
                       </div>
                     )}
 
-                    <DoctorPanel result={doctor} failures={doctorFailures} warnings={doctorWarnings} onRun={runPreflightDoctor} disabled={working || !config.gamePath} />
+                    {advancedMode && (
+                      <details className="advanced-settings">
+                        <summary>
+                          <ListChecks size={16} />
+                          Setup checks
+                        </summary>
+                        <DoctorPanel result={doctor} failures={doctorFailures} warnings={doctorWarnings} onRun={runPreflightDoctor} disabled={working || !config.gamePath} />
+                      </details>
+                    )}
 
-                    <label>
-                      <span>Server sync endpoint</span>
-                      <small className="field-help">This is the server mod list. Most players should leave the GDG server URL as-is.</small>
-                      <div className="input-row">
-                        <input
-                          value={config.manifestInput}
-                          onChange={(event) => void updateManifestInput(event.target.value)}
-                          placeholder={sampleSyncEndpoint}
-                        />
-                        <button type="button" onClick={browseManifestFile} disabled={working} title="Browse manifest">
-                          <FolderOpen size={17} />
-                        </button>
-                      </div>
-                    </label>
+                    {advancedMode && config.manifestInput ? (
+                      <details className="advanced-settings">
+                        <summary>
+                          <UploadCloud size={16} />
+                          Custom server link
+                        </summary>
+                        <label>
+                          <span>Server mod list link</span>
+                          <small className="field-help">Most players should leave this alone. Change it only if GDG staff gave you a special link or file.</small>
+                          <div className="input-row">
+                            <input
+                              value={config.manifestInput}
+                              onChange={(event) => void updateManifestInput(event.target.value)}
+                              placeholder={sampleSyncEndpoint}
+                            />
+                            <button type="button" onClick={browseManifestFile} disabled={working} title="Browse manifest">
+                              <FolderOpen size={17} />
+                            </button>
+                          </div>
+                        </label>
+                      </details>
+                    ) : !config.manifestInput ? (
+                      <label>
+                        <span>Server mod list link</span>
+                        <small className="field-help">Choose a GDG server on the left, or paste a special link from GDG staff.</small>
+                        <div className="input-row">
+                          <input
+                            value={config.manifestInput}
+                            onChange={(event) => void updateManifestInput(event.target.value)}
+                            placeholder={sampleSyncEndpoint}
+                          />
+                          <button type="button" onClick={browseManifestFile} disabled={working} title="Browse manifest">
+                            <FolderOpen size={17} />
+                          </button>
+                        </div>
+                      </label>
+                    ) : (
+                      <p className="step-copy">GDG will check this folder automatically when your selected server or game folder changes.</p>
+                    )}
 
                     <div className="step-actions">
-                      <button className="secondary" type="button" onClick={previewSync} disabled={working || !config.gamePath || !config.manifestInput}>
+                      <button className="secondary" type="button" onClick={() => void previewSync()} disabled={working || !config.gamePath || !config.manifestInput}>
                         <ListChecks size={17} />
                         Check Server Mods
                       </button>
@@ -1555,35 +2108,83 @@ function App() {
                       </div>
                     )}
                     <div className="step-actions">
-                      <button className="secondary" type="button" onClick={() => void cleanLocalMods("backup")} disabled={working || !preview || localOnlyMods === 0}>
-                        <HardDrive size={17} />
-                        Move Local-Only to Backup
-                      </button>
-                      <button className="secondary danger" type="button" onClick={() => void cleanLocalMods("delete")} disabled={working || !preview || localOnlyMods === 0}>
-                        <Trash2 size={17} />
-                        Delete Local-Only
-                      </button>
-                      <button className="secondary" type="button" onClick={() => void cleanManagedMods("backup", "extra")} disabled={working || !preview || managedExtraMods === 0}>
-                        <HardDrive size={17} />
-                        Move Extra Managed
-                      </button>
-                      <button className="secondary danger" type="button" onClick={() => void cleanManagedMods("delete", "extra")} disabled={working || !preview || managedExtraMods === 0}>
-                        <Trash2 size={17} />
-                        Delete Extra Managed
-                      </button>
-                      <button className="secondary" type="button" onClick={repairSync} disabled={working || !preview || gameVersionMismatch || Boolean(preview.summary.blocked) || repairableMods === 0 || repairSpaceBlocked}>
-                        <Wrench size={17} />
-                        {gameVersionMismatch ? "Update Game First" : repairSpaceBlocked ? "Need Space to Repair" : "Reinstall Server Mods"}
-                      </button>
-                      <button className="secondary danger" type="button" onClick={() => void resetAndReinstall("delete")} disabled={working || !preview || gameVersionMismatch || repairSpaceBlocked}>
-                        <Trash2 size={17} />
-                        {gameVersionMismatch ? "Update Game First" : "Delete + Reinstall"}
-                      </button>
-                      <button className="primary" type="button" onClick={applySync} disabled={working || !preview || gameVersionMismatch || Boolean(preview.summary.blocked) || modsToInstall === 0 || syncSpaceBlocked}>
-                        <Download size={17} />
-                        {gameVersionMismatch ? "Update Game First" : syncSpaceBlocked ? "Need More Space" : "Install Missing Mods"}
-                      </button>
+                      {showCheckFirstAction && (
+                        <button className="secondary" type="button" onClick={() => void previewSync()} disabled={working || !config.gamePath || !config.manifestInput}>
+                          <ListChecks size={17} />
+                          Check Server Mods
+                        </button>
+                      )}
+                      {showUpdateGameActions && (
+                        <>
+                          <button className="secondary" type="button" onClick={openSteamUpdate} disabled={working}>
+                            <RefreshCw size={17} />
+                            Open Steam
+                          </button>
+                          <button className="secondary" type="button" onClick={() => void previewSync()} disabled={working || !config.gamePath || !config.manifestInput}>
+                            <ListChecks size={17} />
+                            Check Again
+                          </button>
+                        </>
+                      )}
+                      {showLocalCleanupActions && (
+                        <>
+                          <button className="secondary" type="button" onClick={() => void cleanLocalMods("backup")} disabled={working}>
+                            <HardDrive size={17} />
+                            Move Local-Only to Backup
+                          </button>
+                          {advancedMode && (
+                            <button className="secondary danger" type="button" onClick={() => void cleanLocalMods("delete")} disabled={working}>
+                              <Trash2 size={17} />
+                              Delete Local-Only
+                            </button>
+                          )}
+                        </>
+                      )}
+                      {showManagedCleanupActions && (
+                        <>
+                          <button className="secondary" type="button" onClick={() => void cleanManagedMods("backup", "extra")} disabled={working}>
+                            <HardDrive size={17} />
+                            Move Extra Managed
+                          </button>
+                          {advancedMode && (
+                            <button className="secondary danger" type="button" onClick={() => void cleanManagedMods("delete", "extra")} disabled={working}>
+                              <Trash2 size={17} />
+                              Delete Extra Managed
+                            </button>
+                          )}
+                        </>
+                      )}
+                      {showInstallMissingAction && (
+                        <button className="primary" type="button" onClick={applySync} disabled={working}>
+                          <Download size={17} />
+                          Install Missing Mods
+                        </button>
+                      )}
+                      {showLaunchStepAction && (
+                        <button className="primary" type="button" onClick={() => setOpenStep("launch")} disabled={working}>
+                          <Play size={17} />
+                          Continue to Launch
+                        </button>
+                      )}
                     </div>
+                    {showRepairActions && (
+                      <details className="advanced-actions">
+                        <summary>
+                          <Wrench size={16} />
+                          Repair options
+                        </summary>
+                        <div className="step-actions">
+                          <button className="secondary" type="button" onClick={repairSync} disabled={working}>
+                            <Wrench size={17} />
+                            Reinstall Server Mods
+                          </button>
+                          <button className="secondary danger" type="button" onClick={() => void resetAndReinstall("delete")} disabled={working}>
+                            <Trash2 size={17} />
+                            Delete + Reinstall
+                          </button>
+                        </div>
+                      </details>
+                    )}
                   </div>
                 </StepSection>
 
@@ -1606,26 +2207,28 @@ function App() {
                             {hasDllMods && <small>DLL mods: {dllMods.map((mod) => mod.displayName).join(", ")}</small>}
                           </span>
                         </div>
-                        <div className="eac-toggle" role="group" aria-label="Easy Anti-Cheat launch mode">
-                          <button
-                            className={config.launchWithEac ? "active" : ""}
-                            type="button"
-                            onClick={() => void updateLaunchWithEac(true)}
-                            disabled={working}
-                          >
-                            <ShieldCheck size={16} />
-                            EAC On
-                          </button>
-                          <button
-                            className={!config.launchWithEac ? "active" : ""}
-                            type="button"
-                            onClick={() => void updateLaunchWithEac(false)}
-                            disabled={working}
-                          >
-                            <ShieldOff size={16} />
-                            EAC Off
-                          </button>
-                        </div>
+                        {advancedMode && (
+                          <div className="eac-toggle" role="group" aria-label="Easy Anti-Cheat launch mode">
+                            <button
+                              className={config.launchWithEac ? "active" : ""}
+                              type="button"
+                              onClick={() => void updateLaunchWithEac(true)}
+                              disabled={working}
+                            >
+                              <ShieldCheck size={16} />
+                              EAC On
+                            </button>
+                            <button
+                              className={!config.launchWithEac ? "active" : ""}
+                              type="button"
+                              onClick={() => void updateLaunchWithEac(false)}
+                              disabled={working}
+                            >
+                              <ShieldOff size={16} />
+                              EAC Off
+                            </button>
+                          </div>
+                        )}
                         <button className="primary launch-button" type="button" onClick={launchGame} disabled={working || !config.gamePath || gameVersionMismatch}>
                           <Play size={17} />
                           Launch
@@ -1636,10 +2239,12 @@ function App() {
                     )}
                   </div>
                 </StepSection>
-              </div>
+                </div>
+              )}
             </section>
 
-            <section className="panel compact">
+            {advancedMode && (
+              <section className="panel compact">
               <div className="server-match-heading">
                 <span className="section-label">Server Match</span>
                 {planFilter !== "all" && (
@@ -1666,11 +2271,13 @@ function App() {
                 <StorageStat icon={<Database size={16} />} label="Server mods" value={serverSize.known ? formatBytes(serverSize.bytes) : "Unknown"} tone="gold" />
                 <StorageStat icon={<HardDrive size={16} />} label="Free space" value={diskSpace ? formatBytes(diskSpace.freeBytes) : "Unknown"} tone={freeSpaceTone} />
               </div>
-            </section>
+              </section>
+            )}
 
-            {syncProgress && <ProgressPanel progress={syncProgress} panelRef={progressPanelRef} />}
+            {syncProgress && (advancedMode || working) && <ProgressPanel progress={syncProgress} panelRef={progressPanelRef} />}
 
-            <section className="panel full">
+            {advancedMode && (
+              <section className="panel full">
               <div className="panel-heading">
                 <div>
                   <span className="section-label">Sync Plan</span>
@@ -1714,9 +2321,10 @@ function App() {
                   <EmptyState icon={<Search size={22} />} title="No mods in this filter" value="Clear the filter or choose another server match value." />
                 )}
               </div>
-            </section>
+              </section>
+            )}
 
-            {applyResult && (
+            {advancedMode && applyResult && (
               <section className="panel full">
                 <div className="panel-heading">
                   <div>
@@ -1865,17 +2473,11 @@ function App() {
             {showingSupportProgress && syncProgress && <ProgressPanel progress={syncProgress} panelRef={progressPanelRef} />}
 
             {supportBundle && (
-              <div className="support-result">
-                <Archive size={18} />
-                <span>
-                  <strong>Support bundle ready</strong>
-                  <small>{supportBundle.fileName}</small>
-                </span>
-                <button className="secondary slim" type="button" onClick={() => void window.gdg.openPath(supportBundle.folderPath)}>
-                  <FolderOpen size={16} />
-                  Open Folder
-                </button>
-              </div>
+              <SupportResult
+                bundle={supportBundle}
+                message={supportMessage}
+                onOpen={() => void window.gdg.openPath(supportBundle.folderPath)}
+              />
             )}
 
             <div className="settings-grid">
@@ -1891,11 +2493,11 @@ function App() {
               <SettingItem label="DLL mod warning" value={hasDllMods ? `${dllMods.length} mod${dllMods.length === 1 ? "" : "s"} detected` : scanMatchesGame ? "No DLL mods detected" : "Checking"} />
               <SettingItem label="GDG-managed mods" value={`${managedInstalledMods.length} installed`} />
               <SettingItem label="Server-only local mods" value={`${serverOnlyInstalledMods.length} detected`} />
-              <SettingItem label="Preflight doctor" value={doctor ? `${doctorFailures} fail / ${doctorWarnings} warn` : "Not run"} />
+              <SettingItem label="Setup checks" value={doctor ? `${doctorFailures} fail / ${doctorWarnings} warn` : "Not run"} />
               <SettingItem label="Free disk space" value={diskSpace ? `${formatBytes(diskSpace.freeBytes)} free of ${formatBytes(diskSpace.totalBytes)}` : "Unknown"} />
               <SettingItem label="Backup storage" value={`${backups.length} backups / ${formatBytes(backupTotalBytes)}`} />
               <SettingItem label="Selected server mods" value={serverSize.known ? formatBytes(serverSize.bytes) : "Unknown"} />
-              <SettingItem label="Selected sync endpoint" value={config.manifestInput || "Not set"} />
+              <SettingItem label="Server mod list link" value={config.manifestInput || "Not set"} />
               <SettingItem label="Server directory" value={config.serverDirectoryInput || "Built-in sample"} />
               <SettingItem label="Game adapter" value="7dtd" />
             </div>
@@ -1918,6 +2520,207 @@ function StatusRow({ icon, label, value }: { icon: React.ReactNode; label: strin
   );
 }
 
+function ReadinessMeter({ summary }: { summary: ReadinessSummary }) {
+  return (
+    <section className={`readiness-meter ${summary.tone}`} aria-label="Readiness">
+      <span>
+        <strong>{summary.title}</strong>
+        <small>{summary.detail}</small>
+      </span>
+      <b>{summary.value}</b>
+    </section>
+  );
+}
+
+function GuideCard({
+  action
+}: {
+  action: GuideAction;
+}) {
+  const primaryText = action.disabled && action.workingLabel
+    ? action.workingLabel
+    : action.primaryLabel || (action.tone === "ready" ? action.label : "Make Me Ready");
+  const preference = action.preference;
+
+  return (
+    <section className={`guided-next ${action.tone}`} aria-label="Recommended next step">
+      <div className="guided-next-icon">{action.icon}</div>
+      <span>
+        <strong>{action.title}</strong>
+        <small>{action.detail}</small>
+        {action.previewText && <em className="guided-preview">{action.previewText}</em>}
+      </span>
+      <div className="guided-next-actions">
+        <button className={`primary ${action.primaryTone === "danger" ? "danger" : ""}`} type="button" onClick={action.onClick} disabled={action.disabled}>
+          {action.icon}
+          {primaryText}
+        </button>
+        {action.secondaryAction && (
+          <button
+            className={`secondary slim ${action.secondaryAction.tone === "danger" ? "danger" : ""}`}
+            type="button"
+            onClick={action.secondaryAction.onClick}
+            disabled={action.secondaryAction.disabled ?? action.disabled}
+          >
+            {action.secondaryAction.icon}
+            {action.secondaryAction.label}
+          </button>
+        )}
+        {action.detailsAction && (
+          <button className="secondary slim" type="button" onClick={action.detailsAction.onClick} disabled={action.detailsAction.disabled ?? action.disabled}>
+            {action.detailsAction.icon}
+            {action.detailsAction.label}
+          </button>
+        )}
+      </div>
+      {preference && (
+        <div className="cleanup-preference" role="group" aria-label="Cleanup preference">
+          {cleanupPreferenceOptions.map((option) => (
+            <button
+              key={option.value}
+              className={preference.value === option.value ? "active" : ""}
+              type="button"
+              onClick={() => preference.onChange(option.value)}
+              aria-pressed={preference.value === option.value}
+              disabled={action.disabled}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ProblemCards({ cards }: { cards: ProblemCardInfo[] }) {
+  return (
+    <section className="problem-cards" aria-label="Fixes needed">
+      {cards.map((card) => (
+        <article className={`problem-card ${card.tone}`} key={card.key}>
+          <div className="problem-icon">{card.icon}</div>
+          <span>
+            <strong>{card.title}</strong>
+            <small>{card.detail}</small>
+          </span>
+          <button className={card.tone === "danger" ? "secondary danger slim" : "secondary slim"} type="button" onClick={card.onClick} disabled={card.disabled}>
+            {card.icon}
+            {card.label}
+          </button>
+        </article>
+      ))}
+    </section>
+  );
+}
+
+function SupportHelpCard({ onSupport, disabled }: { onSupport: () => void | Promise<void>; disabled: boolean }) {
+  return (
+    <section className="support-help-card" aria-label="Get GDG help">
+      <Archive size={18} />
+      <span>
+        <strong>Need help?</strong>
+        <small>Create a support bundle and send it to GDG staff.</small>
+      </span>
+      <button className="secondary slim" type="button" onClick={onSupport} disabled={disabled}>
+        <Archive size={16} />
+        Send Help to GDG
+      </button>
+    </section>
+  );
+}
+
+function BackupResultCard({
+  backupRoot,
+  onOpen,
+  onRestore,
+  disabled
+}: {
+  backupRoot: string;
+  onOpen: () => void;
+  onRestore: () => void | Promise<void>;
+  disabled: boolean;
+}) {
+  return (
+    <section className="backup-result-card" aria-label="Backup ready">
+      <Archive size={18} />
+      <span>
+        <strong>Done. Your mods were kept in a backup.</strong>
+        <small>{backupRoot}</small>
+      </span>
+      <button className="secondary slim" type="button" onClick={onOpen}>
+        <FolderOpen size={16} />
+        Open Backup
+      </button>
+      <button className="secondary slim" type="button" onClick={onRestore} disabled={disabled}>
+        <RotateCcw size={16} />
+        Restore Backup
+      </button>
+    </section>
+  );
+}
+
+function SupportResult({
+  bundle,
+  message,
+  onOpen
+}: {
+  bundle: { path: string; folderPath: string; fileName: string };
+  message: string;
+  onOpen: () => void;
+}) {
+  async function copyMessage() {
+    if (message) {
+      await navigator.clipboard?.writeText(message);
+    }
+  }
+
+  return (
+    <div className="support-result">
+      <Archive size={18} />
+      <span>
+        <strong>Support bundle ready</strong>
+        <small>{bundle.fileName}{message ? " - message copied for Discord" : ""}</small>
+      </span>
+      <button className="secondary slim" type="button" onClick={onOpen}>
+        <FolderOpen size={16} />
+        Open Folder
+      </button>
+      <button className="secondary slim" type="button" onClick={() => void copyMessage()} disabled={!message}>
+        <Copy size={16} />
+        Copy Message
+      </button>
+    </div>
+  );
+}
+
+function ReadyPanel({
+  serverName,
+  folderName,
+  eacLabel,
+  onLaunch,
+  disabled
+}: {
+  serverName: string;
+  folderName: string;
+  eacLabel: string;
+  onLaunch: () => void | Promise<void>;
+  disabled: boolean;
+}) {
+  return (
+    <section className="ready-panel" aria-label="Ready to play">
+      <CheckCircle2 size={22} />
+      <span>
+        <strong>You are ready to play</strong>
+        <small>{serverName} - {folderName} - EAC {eacLabel}</small>
+      </span>
+      <button className="primary" type="button" onClick={onLaunch} disabled={disabled}>
+        <Play size={17} />
+        Launch Game
+      </button>
+    </section>
+  );
+}
+
 function getGameVersionForBuild(buildId: string, versionMap: Record<string, string> = {}) {
   const key = String(buildId || "").trim();
   if (!key) {
@@ -1925,6 +2728,93 @@ function getGameVersionForBuild(buildId: string, versionMap: Record<string, stri
   }
 
   return String(versionMap[key] || "").trim();
+}
+
+function isRecommendedServer(server: DirectoryServer) {
+  const label = `${server.id} ${server.name}`.toLowerCase();
+  return label.includes("test");
+}
+
+function readCleanupPreference(): CleanupPreference {
+  if (typeof window === "undefined") {
+    return "ask";
+  }
+
+  try {
+    const value = window.localStorage.getItem(cleanupPreferenceKey);
+    return value === "backup" || value === "delete" || value === "ask" ? value : "ask";
+  } catch {
+    return "ask";
+  }
+}
+
+function writeCleanupPreference(preference: CleanupPreference) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(cleanupPreferenceKey, preference);
+  } catch {
+    // Preference persistence is helpful, but not required for syncing mods.
+  }
+}
+
+function getProgressButtonLabel(progress: SyncProgress | null, verb: string) {
+  if (!progress || progress.phase === "complete" || progress.phase === "failed") {
+    return "";
+  }
+
+  const total = Math.max(progress.total || 0, 0);
+  if (total > 1) {
+    return `${verb} ${Math.min(progress.current, total)} of ${total}`;
+  }
+
+  return `${verb}...`;
+}
+
+function getGameServerStatusLabel(health?: ServerHealth | null) {
+  if (!health) {
+    return "Checking game server";
+  }
+
+  if (health.gameStatus === "online") {
+    return "Game server online";
+  }
+
+  if (health.gameStatus === "offline") {
+    return "Game server offline";
+  }
+
+  return "Game server unknown";
+}
+
+function getGameServerBadgeLabel(health?: ServerHealth | null) {
+  if (!health) {
+    return "Game ?";
+  }
+
+  if (health.gameStatus === "online") {
+    return "Game Online";
+  }
+
+  if (health.gameStatus === "offline") {
+    return "Game Offline";
+  }
+
+  return "Game ?";
+}
+
+function getGameServerStatusClass(health?: ServerHealth | null) {
+  if (!health || health.gameStatus === "unknown") {
+    return "game-unknown";
+  }
+
+  return health.gameStatus === "online" ? "game-online" : "game-offline";
+}
+
+function getGameServerBadgeClass(health?: ServerHealth | null) {
+  return getGameServerStatusClass(health);
 }
 
 function getServerKindLabel(server: DirectoryServer) {
@@ -2001,12 +2891,12 @@ function DoctorPanel({
       <div className="doctor-heading">
         <ListChecks size={18} />
         <span>
-          <strong>{result ? (result.ok ? "Preflight ready" : "Preflight needs attention") : "Preflight doctor"}</strong>
-          <small>{result ? `${failures} fail / ${warnings} warn / ${result.checks.length} checks` : "Folder, version, space, EAC, and server-only checks"}</small>
+          <strong>{result ? (result.ok ? "Setup looks ready" : "Setup needs attention") : "Setup checks"}</strong>
+          <small>{result ? `${failures} fail / ${warnings} warn / ${result.checks.length} checks` : "Checks folder, version, space, EAC, and mod safety"}</small>
         </span>
         <button className="secondary slim" type="button" onClick={onRun} disabled={disabled}>
           <RefreshCw size={16} />
-          Run
+          Check
         </button>
       </div>
       {result && (
