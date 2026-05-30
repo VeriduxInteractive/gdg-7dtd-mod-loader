@@ -111,6 +111,88 @@ const cleanupPreferenceOptions: Array<{ value: CleanupPreference; label: string 
 
 const cleanupPreferenceKey = "gdg.cleanupPreference";
 
+function getModChangeCopy(installCount: number, updateCount: number) {
+  const total = installCount + updateCount;
+  const hasInstall = installCount > 0;
+  const hasUpdate = updateCount > 0;
+  const missingLabel = `${installCount} missing mod${installCount === 1 ? "" : "s"}`;
+  const updateLabel = `${updateCount} mod update${updateCount === 1 ? "" : "s"}`;
+
+  if (hasInstall && hasUpdate) {
+    return {
+      total,
+      hasInstall,
+      hasUpdate,
+      actionLabel: "Apply Server Changes",
+      nextTitle: "Next up: apply server changes",
+      detail: `${missingLabel} and ${updateLabel} are ready for this folder.`,
+      previewText: `GDG will install ${missingLabel} and apply ${updateLabel}. Anything replaced is backed up first.`,
+      workingVerb: "Applying",
+      nextAction: `${total} changes ready`,
+      readinessTitle: "Mod changes ready",
+      readinessDetail: `${missingLabel} and ${updateLabel} will be applied.`,
+      stepTitle: "Apply Server Changes",
+      stepSummary: `${missingLabel} and ${updateLabel} ready`,
+      stepCopy: "GDG will download missing and updated packages, back up folders it replaces, and mark each mod ready as it finishes. Local-only mods are on this PC but not required by this server; they may cause crashes or mismatches."
+    };
+  }
+
+  if (hasUpdate) {
+    return {
+      total,
+      hasInstall,
+      hasUpdate,
+      actionLabel: "Update Mods",
+      nextTitle: "Next up: update mods",
+      detail: `${updateLabel} ready for this folder.`,
+      previewText: `GDG will download ${updateLabel} and back up anything it replaces.`,
+      workingVerb: "Updating",
+      nextAction: `${updateCount} update${updateCount === 1 ? "" : "s"} ready`,
+      readinessTitle: "Mod updates ready",
+      readinessDetail: `${updateLabel} will be applied.`,
+      stepTitle: "Update Mods",
+      stepSummary: `${updateLabel} ready`,
+      stepCopy: "GDG will download updated packages, back up folders it replaces, and mark each mod ready as it finishes. Local-only mods are on this PC but not required by this server; they may cause crashes or mismatches."
+    };
+  }
+
+  if (hasInstall) {
+    return {
+      total,
+      hasInstall,
+      hasUpdate,
+      actionLabel: "Install Missing Mods",
+      nextTitle: "Next up: install missing mods",
+      detail: `${missingLabel} ready for this folder.`,
+      previewText: `GDG will install ${missingLabel} and back up anything it replaces.`,
+      workingVerb: "Installing",
+      nextAction: `${missingLabel} ready`,
+      readinessTitle: "Mods ready to install",
+      readinessDetail: `${missingLabel} will be installed.`,
+      stepTitle: "Install Missing Mods",
+      stepSummary: `${missingLabel} ready to install`,
+      stepCopy: "GDG will download missing packages, back up folders it replaces, and mark each mod ready as it finishes. Local-only mods are on this PC but not required by this server; they may cause crashes or mismatches."
+    };
+  }
+
+  return {
+    total,
+    hasInstall,
+    hasUpdate,
+    actionLabel: "Apply Server Changes",
+    nextTitle: "Next up: apply server changes",
+    detail: "No mod installs or updates are needed.",
+    previewText: "This folder already has the server mod versions it needs.",
+    workingVerb: "Applying",
+    nextAction: "In sync",
+    readinessTitle: "Ready to play",
+    readinessDetail: "No mod installs or updates are needed.",
+    stepTitle: "Install or Update Mods",
+    stepSummary: "No install or update needed",
+    stepCopy: "GDG will show missing or outdated server mods here after a check. Local-only mods are on this PC but not required by this server; they may cause crashes or mismatches."
+  };
+}
+
 function App() {
   const [config, setConfig] = useState<LoaderConfig>(emptyConfig);
   const [detected, setDetected] = useState<DetectedGame | null>(null);
@@ -311,14 +393,14 @@ function App() {
       return "Check mods";
     }
 
-    const work = (preview.summary.install || 0) + (preview.summary.update || 0);
+    const modChanges = getModChangeCopy(preview.summary.install || 0, preview.summary.update || 0);
     const localOnly = preview.summary.keep || 0;
     if (preview.summary.blocked) {
       return `${preview.summary.blocked} blocked`;
     }
 
-    if (work > 0) {
-      return `${work} change${work === 1 ? "" : "s"} ready`;
+    if (modChanges.total > 0) {
+      return modChanges.nextAction;
     }
 
     if (localOnly > 0) {
@@ -1326,7 +1408,10 @@ function App() {
   const gameVersionMismatch = Boolean(gameCompatibility?.checked && !gameCompatibility.ok);
   const gameVersionKnown = Boolean(gameVersion?.steamBuildId);
   const serverSize = getServerSize(preview, selectedHealth);
-  const modsToInstall = preview ? (preview.summary.install || 0) + (preview.summary.update || 0) : 0;
+  const installCount = preview?.summary.install || 0;
+  const updateCount = preview?.summary.update || 0;
+  const modChangeCopy = getModChangeCopy(installCount, updateCount);
+  const modsToInstall = modChangeCopy.total;
   const repairableMods = preview ? preview.plan.filter((item) => ["ready", "install", "update"].includes(item.action) && Boolean(item.mod.source)).length : 0;
   const syncSpaceRequirement = getSyncSpaceRequirement(preview, serverSize);
   const repairSpaceRequirement = getSyncSpaceRequirement(preview, serverSize, { repairMode: true });
@@ -1560,13 +1645,13 @@ function App() {
                   : modsToInstall > 0
                     ? {
                         tone: "gold",
-                        title: "Next up: install missing mods",
-                        detail: `${modsToInstall} server change${modsToInstall === 1 ? "" : "s"} ready for this folder.`,
-                        label: "Install Missing Mods",
-                        icon: <Download size={18} />,
+                        title: modChangeCopy.nextTitle,
+                        detail: modChangeCopy.detail,
+                        label: modChangeCopy.actionLabel,
+                        icon: modChangeCopy.hasUpdate && !modChangeCopy.hasInstall ? <RefreshCw size={18} /> : <Download size={18} />,
                         onClick: () => void continueGuidedFlow(),
-                        workingLabel: getProgressButtonLabel(syncProgress, "Installing"),
-                        previewText: `GDG will install ${modsToInstall} server change${modsToInstall === 1 ? "" : "s"} and back up anything it replaces.`,
+                        workingLabel: getProgressButtonLabel(syncProgress, modChangeCopy.workingVerb),
+                        previewText: modChangeCopy.previewText,
                         detailsAction: {
                           label: "Show Changes",
                           icon: <ListChecks size={18} />,
@@ -1726,8 +1811,8 @@ function App() {
         : modsToInstall > 0
           ? {
               tone: "gold",
-              title: "Mods ready to install",
-              detail: `${modsToInstall} server change${modsToInstall === 1 ? "" : "s"} will be installed.`,
+              title: modChangeCopy.readinessTitle,
+              detail: modChangeCopy.readinessDetail,
               value: String(modsToInstall)
             }
           : {
@@ -2187,16 +2272,16 @@ function App() {
 
                 <StepSection
                   number="3"
-                  title="Install Missing Mods"
+                  title={modChangeCopy.stepTitle}
                   summary={
                     preview
                       ? gameVersionMismatch
-                        ? "Update game before installing"
+                        ? "Update game before applying mod changes"
                         : modsToInstall > 0
-                        ? `${modsToInstall} change${modsToInstall === 1 ? "" : "s"} ready to install`
+                        ? modChangeCopy.stepSummary
                         : localOnlyMods > 0
                           ? `${localOnlyMods} local-only mod${localOnlyMods === 1 ? "" : "s"} to review`
-                          : "No install needed"
+                          : modChangeCopy.stepSummary
                       : "Check server mods first"
                   }
                   state={installStepState}
@@ -2205,7 +2290,7 @@ function App() {
                 >
                   <div className="step-body">
                     <p className="step-copy">
-                      GDG will download missing packages, back up updated folders, and mark each mod ready as it finishes. Local-only mods are on this PC but not required by this server; they may cause crashes or mismatches.
+                      {modChangeCopy.stepCopy}
                     </p>
                     {localOnlyMods > 0 && (
                       <div className="local-only-warning">
@@ -2323,8 +2408,8 @@ function App() {
                       )}
                       {showInstallMissingAction && (
                         <button className="primary" type="button" onClick={() => void applySync()} disabled={working}>
-                          <Download size={17} />
-                          Install Missing Mods
+                          {modChangeCopy.hasUpdate && !modChangeCopy.hasInstall ? <RefreshCw size={17} /> : <Download size={17} />}
+                          {modChangeCopy.actionLabel}
                         </button>
                       )}
                       {showLaunchStepAction && (
@@ -3329,7 +3414,11 @@ function PlanRow({ item, liveStatus }: { item: SyncPlanItem; liveStatus?: LivePl
     );
   const reason =
     liveStatus === "active"
-      ? "Installing now"
+      ? action === "update"
+        ? "Updating now"
+        : action === "install"
+          ? "Installing now"
+          : "Applying now"
       : liveStatus === "ready"
         ? "Ready"
         : liveStatus === "failed"
@@ -3417,7 +3506,7 @@ function formatSyncPhase(phase: SyncProgress["phase"]) {
     downloading: "Downloading package",
     extracting: "Unpacking package",
     "backing-up": "Saving backup",
-    installing: "Installing mod",
+    installing: "Applying mod",
     installed: "Mod ready",
     verifying: "Verifying install",
     complete: "Done",
@@ -3514,7 +3603,7 @@ function getProgressTitle(progress: SyncProgress) {
     return "Sync needs attention";
   }
 
-  return "Installing server mods";
+  return "Applying server mods";
 }
 
 function getServerSize(preview: SyncPreview | null, selectedHealth: ServerHealth | null) {
