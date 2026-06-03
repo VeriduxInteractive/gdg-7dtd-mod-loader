@@ -18,9 +18,58 @@ const {
   isClientInstallableManifestMod
 } = require("../shared/gdg-sync-core.cjs");
 
-const GAME_ID = "7dtd";
-const GAME_NAME = "7 Days to Die";
-const STEAM_APP_ID = "251570";
+const DEFAULT_GAME_ID = "7dtd";
+const GAME_PROFILES = {
+  "7dtd": {
+    id: "7dtd",
+    name: "7 Days to Die",
+    shortName: "7DTD",
+    steamAppId: "251570",
+    steamStoreSlug: "7_Days_to_Die",
+    envInstall: "GDG_7DTD_INSTALL",
+    defaultServerId: "gdg-test",
+    copyFolderName: "7 Days To Die - GDG",
+    modsPathSegments: ["Mods"],
+    modArchive: "modinfo-folder",
+    supportsEac: true,
+    directExecutables: ["7DaysToDie.exe", "7DaysToDieServer.exe"],
+    eacExecutables: ["7DaysToDie_EAC.exe"],
+    rootSignals: ["7DaysToDie.exe", "7DaysToDie_EAC.exe", "7DaysToDie_Data", "7DaysToDieServer.exe"],
+    steamCommonNames: ["7 Days To Die", "7 Days to Die", "7 Days To Die Dedicated Server"],
+    extraCandidateRoots: () => [path.join(os.homedir(), "AppData", "Roaming", "7DaysToDie")],
+    excludedCopyPaths: ["Mods", ".gdg-mod-loader"],
+    supportLogName: "7 Days to Die",
+    logCandidateRoots: () => [
+      path.join(os.homedir(), "AppData", "LocalLow", "The Fun Pimps", "7 Days To Die"),
+      path.join(os.homedir(), "AppData", "Roaming", "7DaysToDie"),
+      path.join(os.homedir(), "AppData", "Roaming", "7DaysToDie", "logs")
+    ]
+  },
+  repo: {
+    id: "repo",
+    name: "R.E.P.O.",
+    shortName: "R.E.P.O.",
+    steamAppId: "3241660",
+    steamStoreSlug: "REPO",
+    envInstall: "GDG_REPO_INSTALL",
+    defaultServerId: "gdg-repo",
+    copyFolderName: "R.E.P.O. - GDG",
+    modsPathSegments: ["BepInEx", "plugins"],
+    modArchive: "generic-folder",
+    supportsEac: false,
+    directExecutables: ["REPO.exe"],
+    eacExecutables: [],
+    rootSignals: ["REPO.exe", "REPO_Data"],
+    steamCommonNames: ["REPO", "R.E.P.O."],
+    extraCandidateRoots: () => [],
+    excludedCopyPaths: ["BepInEx", "doorstop_config.ini", "winhttp.dll", ".doorstop_version", ".gdg-mod-loader"],
+    supportLogName: "R.E.P.O.",
+    logCandidateRoots: () => [
+      path.join(os.homedir(), "AppData", "LocalLow", "semiwork", "REPO"),
+      path.join(os.homedir(), "AppData", "LocalLow", "semiwork", "R.E.P.O.")
+    ]
+  }
+};
 const CONFIG_VERSION = 1;
 const INSTALL_STATE_VERSION = 1;
 const OPERATION_HISTORY_LIMIT = 80;
@@ -109,7 +158,7 @@ app.on("window-all-closed", () => {
 function registerIpc() {
   ipcMain.handle("gdg:get-initial-state", async () => {
     const config = await loadConfig();
-    const detected = await detectSevenDaysInstall();
+    const detected = await detectGameInstall(config.gameId);
     return { config, detected };
   });
 
@@ -117,13 +166,15 @@ function registerIpc() {
     return saveConfig(patch);
   });
 
-  ipcMain.handle("gdg:detect-game", async () => {
-    return detectSevenDaysInstall();
+  ipcMain.handle("gdg:detect-game", async (_event, payload = {}) => {
+    const gameId = payload?.gameId || (await loadConfig()).gameId;
+    return detectGameInstall(gameId);
   });
 
   ipcMain.handle("gdg:select-game-folder", async () => {
+    const profile = getGameProfile((await loadConfig()).gameId);
     const result = await dialog.showOpenDialog(mainWindow, {
-      title: "Select 7 Days to Die folder",
+      title: `Select ${profile.name} folder`,
       properties: ["openDirectory"]
     });
 
@@ -135,7 +186,7 @@ function registerIpc() {
     return {
       canceled: false,
       path: selectedPath,
-      valid: await isSevenDaysGameRoot(selectedPath)
+      valid: await isGameRoot(selectedPath, profile.id)
     };
   });
 
@@ -166,7 +217,7 @@ function registerIpc() {
   });
 
   ipcMain.handle("gdg:get-game-version", async (_event, payload) => {
-    return getGameVersionInfo(payload.gamePath);
+    return getGameVersionInfo(payload.gamePath, await resolvePayloadGameId(payload));
   });
 
   ipcMain.handle("gdg:clone-game-install", async (event, payload) => {
@@ -176,7 +227,7 @@ function registerIpc() {
   });
 
   ipcMain.handle("gdg:scan-mods", async (_event, payload) => {
-    return scanMods(payload.gamePath, { hash: false });
+    return scanMods(payload.gamePath, { hash: false, gameId: await resolvePayloadGameId(payload) });
   });
 
   ipcMain.handle("gdg:preview-sync", async (_event, payload) => {
@@ -246,12 +297,13 @@ function registerIpc() {
   });
 
   ipcMain.handle("gdg:open-steam-update", async () => {
+    const profile = getGameProfile((await loadConfig()).gameId);
     try {
-      await shell.openExternal(`steam://nav/games/details/${STEAM_APP_ID}`);
+      await shell.openExternal(`steam://nav/games/details/${profile.steamAppId}`);
       return { ok: true, target: "steam" };
     } catch (error) {
       try {
-        await shell.openExternal(`https://store.steampowered.com/app/${STEAM_APP_ID}/7_Days_to_Die/`);
+        await shell.openExternal(`https://store.steampowered.com/app/${profile.steamAppId}/${profile.steamStoreSlug}/`);
         return { ok: true, target: "web" };
       } catch (fallbackError) {
         return { ok: false, error: fallbackError.message || error.message };
@@ -606,6 +658,7 @@ async function createSupportBundle(onProgress = () => {}) {
     errors.push({ section: "config", error: error.message });
     return getDefaultConfig();
   });
+  const profile = getGameProfile(config.gameId);
   reportSupportBundleProgress(onProgress, "preparing", "Loaded mod loader settings.", 1, totalSteps);
 
   const summary = {
@@ -623,6 +676,7 @@ async function createSupportBundle(onProgress = () => {}) {
     },
     selected: {
       gamePath: config.gamePath || "",
+      gameId: profile.id,
       manifestInput: config.manifestInput || "",
       serverDirectoryInput: config.serverDirectoryInput || "",
       lastServerId: config.lastServerId || "",
@@ -642,8 +696,8 @@ async function createSupportBundle(onProgress = () => {}) {
   await addLocalGameContextToZip(zip, config, errors);
   reportSupportBundleProgress(onProgress, "verifying", "Checking selected server mod list.", 5, totalSteps);
   await addServerContextToZip(zip, config, errors);
-  reportSupportBundleProgress(onProgress, "scanning", "Collecting recent 7 Days to Die logs.", 6, totalSteps);
-  await addRecentSevenDaysLogsToZip(zip, config, errors);
+  reportSupportBundleProgress(onProgress, "scanning", `Collecting recent ${profile.name} logs.`, 6, totalSteps);
+  await addRecentGameLogsToZip(zip, config, errors);
 
   reportSupportBundleProgress(onProgress, "installing", "Writing support bundle zip.", 7, totalSteps);
   addJsonToZip(zip, "summary.json", summary);
@@ -669,7 +723,8 @@ function reportSupportBundleProgress(onProgress, phase, message, current, total)
 
 async function addDetectedGameToZip(zip, errors) {
   try {
-    addJsonToZip(zip, "detected-game.json", await detectSevenDaysInstall());
+    const config = await loadConfig();
+    addJsonToZip(zip, "detected-game.json", await detectGameInstall(config.gameId));
   } catch (error) {
     errors.push({ section: "detected-game", error: error.message });
   }
@@ -682,7 +737,7 @@ async function addLocalGameContextToZip(zip, config, errors) {
   }
 
   try {
-    addJsonToZip(zip, "local-game-version.json", await getGameVersionInfo(config.gamePath));
+    addJsonToZip(zip, "local-game-version.json", await getGameVersionInfo(config.gamePath, config.gameId));
   } catch (error) {
     errors.push({ section: "local-game-version", error: error.message });
   }
@@ -694,7 +749,7 @@ async function addLocalGameContextToZip(zip, config, errors) {
   }
 
   try {
-    addJsonToZip(zip, "local-mods.json", await scanMods(config.gamePath, { hash: false }));
+    addJsonToZip(zip, "local-mods.json", await scanMods(config.gamePath, { hash: false, gameId: config.gameId }));
   } catch (error) {
     errors.push({ section: "local-mods", error: error.message });
   }
@@ -720,7 +775,7 @@ async function addServerContextToZip(zip, config, errors) {
 
   try {
     const manifest = await loadManifest(config.manifestInput);
-    validateManifest(manifest);
+    validateManifest(manifest, config.gameId);
     addJsonToZip(zip, "server-manifest.json", manifest);
     addJsonToZip(zip, "server-size-summary.json", getManifestSizeSummary(manifest));
   } catch (error) {
@@ -733,12 +788,14 @@ async function addServerContextToZip(zip, config, errors) {
 
   try {
     const preview = await previewSync({
+      gameId: config.gameId,
       gamePath: config.gamePath,
       manifestInput: config.manifestInput
     });
     addJsonToZip(zip, "sync-preview.json", preview);
     addJsonToZip(zip, "skipped-server-only.json", preview.skippedServerOnly || []);
     addJsonToZip(zip, "preflight-doctor.json", await runPreflightDoctor({
+      gameId: config.gameId,
       gamePath: config.gamePath,
       manifestInput: config.manifestInput,
       launchWithEac: config.launchWithEac
@@ -763,10 +820,11 @@ async function addDiagnosticFileToZip(zip, errors) {
   }
 }
 
-async function addRecentSevenDaysLogsToZip(zip, config, errors) {
+async function addRecentGameLogsToZip(zip, config, errors) {
+  const profile = getGameProfile(config.gameId);
   try {
-    const logs = await collectRecentSevenDaysLogs(config.gamePath);
-    addJsonToZip(zip, "7-days-logs/index.json", logs.map((log) => ({
+    const logs = await collectRecentGameLogs(config.gamePath, profile.id);
+    addJsonToZip(zip, "game-logs/index.json", logs.map((log) => ({
       sourcePath: log.path,
       sizeBytes: log.size,
       modifiedAt: log.modifiedAt
@@ -774,22 +832,23 @@ async function addRecentSevenDaysLogsToZip(zip, config, errors) {
 
     for (const log of logs) {
       const safeName = sanitizeZipSegment(`${log.modifiedAt.replace(/[:.]/g, "-")}-${path.basename(log.path)}`);
-      addTextToZip(zip, `7-days-logs/${safeName}`, await readTextTail(log.path, 5 * 1024 * 1024));
+      addTextToZip(zip, `game-logs/${safeName}`, await readTextTail(log.path, 5 * 1024 * 1024));
     }
   } catch (error) {
-    errors.push({ section: "7-days-logs", error: error.message });
+    errors.push({ section: "game-logs", error: error.message });
   }
 }
 
-async function collectRecentSevenDaysLogs(gamePath) {
+async function collectRecentGameLogs(gamePath, gameId = DEFAULT_GAME_ID) {
+  const profile = getGameProfile(gameId);
   const candidates = [
-    path.join(os.homedir(), "AppData", "LocalLow", "The Fun Pimps", "7 Days To Die"),
-    path.join(os.homedir(), "AppData", "Roaming", "7DaysToDie"),
-    path.join(os.homedir(), "AppData", "Roaming", "7DaysToDie", "logs")
+    ...profile.logCandidateRoots()
   ];
 
   if (gamePath) {
-    candidates.push(path.join(gamePath, "7DaysToDie_Data"));
+    for (const signal of profile.rootSignals.filter((item) => item.endsWith("_Data"))) {
+      candidates.push(path.join(gamePath, signal));
+    }
     candidates.push(path.join(gamePath, "logs"));
   }
 
@@ -1149,6 +1208,7 @@ async function downloadUrlToFile(url, targetPath) {
 
 async function deleteSelectedGdgCopy() {
   const config = await loadConfig();
+  const profile = getGameProfile(config.gameId);
   const gamePath = config.gamePath;
 
   if (!gamePath) {
@@ -1162,13 +1222,13 @@ async function deleteSelectedGdgCopy() {
     return;
   }
 
-  if (!isGdgCopyPath(gamePath) || !(await isSevenDaysGameRoot(gamePath))) {
+  if (!isGdgCopyPathForGame(gamePath, profile.id) || !(await isGameRoot(gamePath, profile.id))) {
     await dialog.showMessageBox(mainWindow, {
       type: "warning",
       buttons: ["OK"],
       title: "Delete GDG Copy",
       message: "GDG refused to delete the selected folder.",
-      detail: `This option only deletes folders named "7 Days To Die - GDG".\n\nSelected folder:\n${gamePath}`
+      detail: `This option only deletes folders named "${profile.copyFolderName}".\n\nSelected folder:\n${gamePath}`
     });
     return;
   }
@@ -1190,7 +1250,7 @@ async function deleteSelectedGdgCopy() {
   try {
     await fsp.rm(gamePath, { recursive: true, force: true });
     const nextConfig = await saveConfig({ gamePath: "" });
-    const detected = await detectSevenDaysInstall();
+    const detected = await detectGameInstall(profile.id);
 
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("gdg:game-copy-deleted", { config: nextConfig, detected, deletedPath: gamePath });
@@ -1283,13 +1343,50 @@ function compareVersions(left, right) {
   return 0;
 }
 
+function getGameProfile(gameId) {
+  return GAME_PROFILES[String(gameId || DEFAULT_GAME_ID).toLowerCase()] || GAME_PROFILES[DEFAULT_GAME_ID];
+}
+
+async function resolvePayloadGameId(payload = {}) {
+  if (payload?.gameId) {
+    return getGameProfile(payload.gameId).id;
+  }
+
+  const config = await loadConfig();
+  return getGameProfile(config.gameId).id;
+}
+
+function getGameModsPath(gamePath, gameId) {
+  const profile = getGameProfile(gameId);
+  return path.join(path.resolve(String(gamePath || "")), ...profile.modsPathSegments);
+}
+
+function getGameCopyLabel(gameId) {
+  return `${getGameProfile(gameId).shortName} GDG copy`;
+}
+
+function isGdgCopyPathForGame(candidatePath, gameId) {
+  const profile = getGameProfile(gameId);
+  return path.basename(String(candidatePath || "")).toLowerCase() === profile.copyFolderName.toLowerCase();
+}
+
+function defaultManifestGameId(manifest) {
+  return getGameProfile(manifest?.game).id;
+}
+
 async function loadConfig() {
   const filePath = getConfigPath();
   try {
     const raw = await fsp.readFile(filePath, "utf8");
-    return {
+    const parsed = {
       ...getDefaultConfig(),
       ...JSON.parse(raw)
+    };
+    const profile = getGameProfile(parsed.gameId);
+    return {
+      ...parsed,
+      gameId: profile.id,
+      lastServerId: parsed.lastServerId || profile.defaultServerId
     };
   } catch {
     return getDefaultConfig();
@@ -1298,9 +1395,11 @@ async function loadConfig() {
 
 async function saveConfig(patch) {
   const current = await loadConfig();
+  const profile = getGameProfile(patch?.gameId || current.gameId);
   const next = {
     ...current,
     ...patch,
+    gameId: profile.id,
     configVersion: CONFIG_VERSION
   };
 
@@ -1310,13 +1409,14 @@ async function saveConfig(patch) {
 }
 
 function getDefaultConfig() {
+  const profile = getGameProfile(DEFAULT_GAME_ID);
   return {
     configVersion: CONFIG_VERSION,
-    gameId: GAME_ID,
+    gameId: profile.id,
     gamePath: "",
     manifestInput: "",
     serverDirectoryInput: DEFAULT_SERVER_DIRECTORY,
-    lastServerId: "gdg-test",
+    lastServerId: profile.defaultServerId,
     launchWithEac: true
   };
 }
@@ -1372,26 +1472,33 @@ function sendIpcProgress(event, channel, payload) {
   }
 }
 
-async function detectSevenDaysInstall() {
+async function detectGameInstall(gameId = DEFAULT_GAME_ID) {
+  const profile = getGameProfile(gameId);
   const candidateRoots = [];
-  if (process.env.GDG_7DTD_INSTALL) {
-    candidateRoots.push({ path: process.env.GDG_7DTD_INSTALL, priority: -10 });
+  if (process.env[profile.envInstall]) {
+    candidateRoots.push({ path: process.env[profile.envInstall], priority: -10 });
   }
 
   const steamAppsFolders = await detectSteamAppsFolders();
 
   for (const steamApps of steamAppsFolders) {
-    candidateRoots.push({ path: path.join(steamApps, "common", "7 Days To Die"), priority: 0 });
-    candidateRoots.push({ path: path.join(steamApps, "common", "7 Days to Die"), priority: 0 });
-    candidateRoots.push({ path: path.join(steamApps, "common", "7 Days To Die Dedicated Server"), priority: 30 });
+    const installedDir = await readSteamInstallDir(steamApps, profile.steamAppId);
+    if (installedDir) {
+      candidateRoots.push({ path: path.join(steamApps, "common", installedDir), priority: -2 });
+    }
+    for (const commonName of profile.steamCommonNames) {
+      candidateRoots.push({ path: path.join(steamApps, "common", commonName), priority: 0 });
+    }
   }
 
-  candidateRoots.push({ path: path.join(os.homedir(), "AppData", "Roaming", "7DaysToDie"), priority: 80 });
+  for (const candidatePath of profile.extraCandidateRoots()) {
+    candidateRoots.push({ path: candidatePath, priority: 80 });
+  }
 
   const validCandidates = [];
   for (const candidate of dedupeCandidates(candidateRoots)) {
-    if (await isSevenDaysGameRoot(candidate.path)) {
-      const isGdgCopy = isGdgCopyPath(candidate.path);
+    if (await isGameRoot(candidate.path, profile.id)) {
+      const isGdgCopy = isGdgCopyPathForGame(candidate.path, profile.id);
       validCandidates.push({
         ...candidate,
         isGdgCopy,
@@ -1405,22 +1512,32 @@ async function detectSevenDaysInstall() {
   if (best) {
     return {
       found: true,
-      gameId: GAME_ID,
-      name: GAME_NAME,
+      gameId: profile.id,
+      name: profile.name,
       path: best.path,
-      modsPath: path.join(best.path, "Mods"),
+      modsPath: getGameModsPath(best.path, profile.id),
       isGdgCopy: best.isGdgCopy
     };
   }
 
   return {
     found: false,
-    gameId: GAME_ID,
-    name: GAME_NAME,
+    gameId: profile.id,
+    name: profile.name,
     path: "",
     modsPath: "",
     isGdgCopy: false
   };
+}
+
+async function readSteamInstallDir(steamApps, appId) {
+  const manifestPath = path.join(steamApps, `appmanifest_${appId}.acf`);
+  if (!(await exists(manifestPath))) {
+    return "";
+  }
+
+  const values = parseSteamAppManifest(await fsp.readFile(manifestPath, "utf8"));
+  return values.installdir || "";
 }
 
 async function detectSteamAppsFolders() {
@@ -1477,20 +1594,14 @@ async function parseSteamLibraries(vdfPath) {
   return [...libraries];
 }
 
-async function isSevenDaysGameRoot(candidatePath) {
+async function isGameRoot(candidatePath, gameId = DEFAULT_GAME_ID) {
+  const profile = getGameProfile(gameId);
   if (!candidatePath || !(await exists(candidatePath))) {
     return false;
   }
 
-  const requiredSignals = [
-    path.join(candidatePath, "7DaysToDie.exe"),
-    path.join(candidatePath, "7DaysToDie_EAC.exe"),
-    path.join(candidatePath, "7DaysToDie_Data"),
-    path.join(candidatePath, "7DaysToDieServer.exe")
-  ];
-
-  for (const signal of requiredSignals) {
-    if (await exists(signal)) {
+  for (const signal of profile.rootSignals) {
+    if (await exists(path.join(candidatePath, signal))) {
       return true;
     }
   }
@@ -1499,24 +1610,26 @@ async function isSevenDaysGameRoot(candidatePath) {
 }
 
 async function cloneGameInstall(payload = {}, onProgress = () => {}) {
+  const gameId = await resolvePayloadGameId(payload);
+  const profile = getGameProfile(gameId);
   reportCloneProgress(onProgress, {
     phase: "preparing",
-    message: "Preparing GDG copy.",
+    message: `Preparing ${getGameCopyLabel(gameId)}.`,
     current: 0,
     total: 0,
     percent: 0
   });
 
   if (!payload.sourcePath) {
-    throw new Error("A detected 7 Days to Die folder is required before creating a GDG copy.");
+    throw new Error(`A detected ${profile.name} folder is required before creating a GDG copy.`);
   }
 
   const sourcePath = path.resolve(String(payload.sourcePath));
-  const folderName = sanitizeFolderName(payload.folderName || "7 Days To Die - GDG");
+  const folderName = sanitizeFolderName(payload.folderName || profile.copyFolderName);
   const targetPath = path.join(path.dirname(sourcePath), folderName);
 
-  if (!(await isSevenDaysGameRoot(sourcePath))) {
-    throw new Error("The detected folder does not look like a 7 Days to Die install.");
+  if (!(await isGameRoot(sourcePath, gameId))) {
+    throw new Error(`The detected folder does not look like a ${profile.name} install.`);
   }
 
   if (sourcePath.toLowerCase() === path.resolve(targetPath).toLowerCase()) {
@@ -1525,22 +1638,22 @@ async function cloneGameInstall(payload = {}, onProgress = () => {}) {
 
   let created = false;
   if (await exists(targetPath)) {
-    if (!(await isSevenDaysGameRoot(targetPath))) {
-      throw new Error(`The target folder already exists and is not a 7 Days to Die install: ${targetPath}`);
+    if (!(await isGameRoot(targetPath, gameId))) {
+      throw new Error(`The target folder already exists and is not a ${profile.name} install: ${targetPath}`);
     }
     reportCloneProgress(onProgress, {
       phase: "complete",
-      message: "Existing GDG copy is ready.",
+      message: `Existing ${getGameCopyLabel(gameId)} is ready.`,
       current: 1,
       total: 1,
       percent: 100
     });
   } else {
-    await copyDirectoryWithProgress(sourcePath, targetPath, onProgress);
+    await copyDirectoryWithProgress(sourcePath, targetPath, onProgress, gameId);
     created = true;
   }
 
-  await fsp.mkdir(path.join(targetPath, "Mods"), { recursive: true });
+  await fsp.mkdir(getGameModsPath(targetPath, gameId), { recursive: true });
 
   let shortcutPath = "";
   let shortcutError = "";
@@ -1553,7 +1666,7 @@ async function cloneGameInstall(payload = {}, onProgress = () => {}) {
         total: 1,
         percent: 99
       });
-      shortcutPath = await createGameShortcut(targetPath, folderName);
+      shortcutPath = await createGameShortcut(targetPath, folderName, gameId);
     } catch (error) {
       shortcutError = error.message;
     }
@@ -1561,7 +1674,7 @@ async function cloneGameInstall(payload = {}, onProgress = () => {}) {
 
   reportCloneProgress(onProgress, {
     phase: "complete",
-    message: created ? "GDG copy created." : "GDG copy selected.",
+    message: created ? `${getGameCopyLabel(gameId)} created.` : `${getGameCopyLabel(gameId)} selected.`,
     current: 1,
     total: 1,
     percent: 100
@@ -1577,7 +1690,7 @@ async function cloneGameInstall(payload = {}, onProgress = () => {}) {
   };
 }
 
-async function copyDirectoryWithProgress(sourceRoot, targetRoot, onProgress) {
+async function copyDirectoryWithProgress(sourceRoot, targetRoot, onProgress, gameId = DEFAULT_GAME_ID) {
   reportCloneProgress(onProgress, {
     phase: "scanning",
     message: "Scanning game files. Existing mods will not be copied.",
@@ -1586,7 +1699,7 @@ async function copyDirectoryWithProgress(sourceRoot, targetRoot, onProgress) {
     percent: 1
   });
 
-  const plan = await buildCopyPlan(sourceRoot, targetRoot);
+  const plan = await buildCopyPlan(sourceRoot, targetRoot, gameId);
   let copiedFiles = 0;
   let copiedBytes = 0;
 
@@ -1634,7 +1747,8 @@ async function copyDirectoryWithProgress(sourceRoot, targetRoot, onProgress) {
   }
 }
 
-async function buildCopyPlan(sourceRoot, targetRoot) {
+async function buildCopyPlan(sourceRoot, targetRoot, gameId = DEFAULT_GAME_ID) {
+  const profile = getGameProfile(gameId);
   const directories = [];
   const files = [];
   let totalBytes = 0;
@@ -1644,7 +1758,7 @@ async function buildCopyPlan(sourceRoot, targetRoot) {
     for (const entry of entries) {
       const sourcePath = path.join(currentSource, entry.name);
       const relativePath = path.relative(sourceRoot, sourcePath);
-      if (isExcludedGameCopyPath(relativePath)) {
+      if (isExcludedGameCopyPath(relativePath, profile)) {
         continue;
       }
       const targetPath = path.join(targetRoot, relativePath);
@@ -1668,12 +1782,12 @@ async function buildCopyPlan(sourceRoot, targetRoot) {
   return { directories, files, totalBytes };
 }
 
-function isExcludedGameCopyPath(relativePath) {
+function isExcludedGameCopyPath(relativePath, profile = getGameProfile(DEFAULT_GAME_ID)) {
   const normalized = String(relativePath || "").replace(/\\/g, "/").toLowerCase();
-  return normalized === "mods" ||
-    normalized.startsWith("mods/") ||
-    normalized === ".gdg-mod-loader" ||
-    normalized.startsWith(".gdg-mod-loader/");
+  return profile.excludedCopyPaths.some((excludedPath) => {
+    const excluded = String(excludedPath || "").replace(/\\/g, "/").toLowerCase();
+    return normalized === excluded || normalized.startsWith(`${excluded}/`);
+  });
 }
 
 async function copyFileWithProgress(sourcePath, targetPath, onChunk) {
@@ -1682,17 +1796,18 @@ async function copyFileWithProgress(sourcePath, targetPath, onChunk) {
   await pipeline(readStream, fs.createWriteStream(targetPath, { flags: "wx" }));
 }
 
-async function createGameShortcut(gamePath, shortcutName) {
+async function createGameShortcut(gamePath, shortcutName, gameId = DEFAULT_GAME_ID) {
+  const profile = getGameProfile(gameId);
   if (process.platform !== "win32" || typeof shell.writeShortcutLink !== "function") {
     throw new Error("Desktop shortcuts are currently supported on Windows.");
   }
 
-  const target = await findSevenDaysExecutable(gamePath, { eacEnabled: false });
+  const target = await findGameExecutable(gamePath, { gameId, eacEnabled: false });
   const shortcutPath = path.join(app.getPath("desktop"), `${sanitizeFolderName(shortcutName)}.lnk`);
   const created = shell.writeShortcutLink(shortcutPath, {
     target,
     cwd: gamePath,
-    description: "Launch 7 Days to Die with the GDG mod setup",
+    description: `Launch ${profile.name} with the GDG mod setup`,
     icon: target
   });
 
@@ -1703,15 +1818,11 @@ async function createGameShortcut(gamePath, shortcutName) {
   return shortcutPath;
 }
 
-async function findSevenDaysExecutable(gamePath, options = {}) {
+async function findGameExecutable(gamePath, options = {}) {
+  const profile = getGameProfile(options.gameId);
   const eacEnabled = Boolean(options.eacEnabled);
-  const eacCandidates = [
-    path.join(gamePath, "7DaysToDie_EAC.exe")
-  ];
-  const directCandidates = [
-    path.join(gamePath, "7DaysToDie.exe"),
-    path.join(gamePath, "7DaysToDieServer.exe")
-  ];
+  const eacCandidates = profile.eacExecutables.map((name) => path.join(gamePath, name));
+  const directCandidates = profile.directExecutables.map((name) => path.join(gamePath, name));
   const candidates = eacEnabled ? [...eacCandidates, ...directCandidates] : [...directCandidates, ...eacCandidates];
 
   for (const candidate of candidates) {
@@ -1720,21 +1831,23 @@ async function findSevenDaysExecutable(gamePath, options = {}) {
     }
   }
 
-  throw new Error("No 7 Days to Die executable was found.");
+  throw new Error(`No ${profile.name} executable was found.`);
 }
 
 async function launchGame(payload = {}) {
+  const gameId = await resolvePayloadGameId(payload);
+  const profile = getGameProfile(gameId);
   if (!payload.gamePath) {
-    throw new Error("Select a 7 Days to Die folder before launching.");
+    throw new Error(`Select a ${profile.name} folder before launching.`);
   }
 
   const gamePath = path.resolve(String(payload.gamePath));
-  if (!(await isSevenDaysGameRoot(gamePath))) {
-    throw new Error("That folder does not look like a 7 Days to Die install.");
+  if (!(await isGameRoot(gamePath, gameId))) {
+    throw new Error(`That folder does not look like a ${profile.name} install.`);
   }
 
-  const eacEnabled = Boolean(payload.eacEnabled);
-  const executable = await findSevenDaysExecutable(gamePath, { eacEnabled });
+  const eacEnabled = profile.supportsEac && Boolean(payload.eacEnabled);
+  const executable = await findGameExecutable(gamePath, { gameId, eacEnabled });
   const actualEacEnabled = path.basename(executable).toLowerCase().includes("_eac");
   const child = spawn(executable, [], {
     cwd: gamePath,
@@ -1755,11 +1868,12 @@ async function launchGame(payload = {}) {
 }
 
 async function scanMods(gamePath, options = {}) {
+  const profile = getGameProfile(options.gameId);
   if (!gamePath) {
     throw new Error("Game path is required.");
   }
 
-  const modsPath = path.join(gamePath, "Mods");
+  const modsPath = getGameModsPath(gamePath, profile.id);
   if (!(await exists(modsPath))) {
     return {
       gamePath,
@@ -1774,19 +1888,25 @@ async function scanMods(gamePath, options = {}) {
   const installState = await readInstallState(gamePath);
 
   for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.startsWith(".")) {
+    if (entry.name.startsWith(".")) {
       continue;
     }
 
     const folderPath = path.join(modsPath, entry.name);
-    const modInfoPath = path.join(folderPath, "ModInfo.xml");
-    if (!(await exists(modInfoPath))) {
+    if (!entry.isDirectory() && !entry.isFile()) {
       continue;
     }
 
-    const xml = await fsp.readFile(modInfoPath, "utf8");
-    const info = parseModInfo(xml);
-    const dllFiles = await findDllFiles(folderPath);
+    const info = entry.isDirectory()
+      ? await readModMetadataFromDirectory(folderPath, entry.name, profile)
+      : getLooseFileModMetadata(entry.name);
+    if (!info) {
+      continue;
+    }
+
+    const dllFiles = entry.isDirectory()
+      ? await findDllFiles(folderPath)
+      : path.extname(entry.name).toLowerCase() === ".dll" ? [entry.name] : [];
     const managedRecord = installState.installedMods[getManagedModKey(entry.name)] || null;
     const mod = {
       folderName: entry.name,
@@ -1809,7 +1929,7 @@ async function scanMods(gamePath, options = {}) {
     };
 
     if (options.hash) {
-      mod.folderSha256 = await hashDirectory(folderPath);
+      mod.folderSha256 = entry.isDirectory() ? await hashDirectory(folderPath) : await hashFile(folderPath);
     }
 
     mods.push(mod);
@@ -1822,6 +1942,40 @@ async function scanMods(gamePath, options = {}) {
     modsPath,
     exists: true,
     mods
+  };
+}
+
+async function readModMetadataFromDirectory(folderPath, fallbackName, profile) {
+  const modInfoPath = path.join(folderPath, "ModInfo.xml");
+  if (profile.modArchive === "modinfo-folder") {
+    if (!(await exists(modInfoPath))) {
+      return null;
+    }
+
+    return parseModInfo(await fsp.readFile(modInfoPath, "utf8"));
+  }
+
+  if (await exists(modInfoPath)) {
+    return parseModInfo(await fsp.readFile(modInfoPath, "utf8"));
+  }
+
+  return {
+    name: fallbackName,
+    displayName: fallbackName,
+    author: "",
+    version: "",
+    description: ""
+  };
+}
+
+function getLooseFileModMetadata(fileName) {
+  const extension = path.extname(fileName);
+  return {
+    name: path.basename(fileName, extension) || fileName,
+    displayName: path.basename(fileName, extension) || fileName,
+    author: "",
+    version: "",
+    description: ""
   };
 }
 
@@ -1879,14 +2033,16 @@ function decodeXml(value) {
 }
 
 async function previewSync(payload) {
+  const gameId = await resolvePayloadGameId(payload);
+  const profile = getGameProfile(gameId);
   const { gamePath, manifestInput } = payload;
 
   if (!gamePath) {
-    throw new Error("Select a 7 Days to Die folder first.");
+    throw new Error(`Select a ${profile.name} folder first.`);
   }
 
-  if (!(await isSevenDaysGameRoot(gamePath))) {
-    throw new Error("That folder does not look like a 7 Days to Die install.");
+  if (!(await isGameRoot(gamePath, gameId))) {
+    throw new Error(`That folder does not look like a ${profile.name} install.`);
   }
 
   if (!manifestInput) {
@@ -1894,10 +2050,10 @@ async function previewSync(payload) {
   }
 
   const manifest = await loadManifest(manifestInput);
-  validateManifest(manifest);
+  validateManifest(manifest, gameId);
 
-  const gameCompatibility = compareGameCompatibility(manifest, await getGameVersionInfo(gamePath));
-  const local = await scanMods(gamePath, { hash: true });
+  const gameCompatibility = compareGameCompatibility(manifest, await getGameVersionInfo(gamePath, gameId), gameId);
+  const local = await scanMods(gamePath, { hash: true, gameId });
   const plan = buildSyncPlan(manifest, local.mods);
   const sizeSummary = getManifestSizeSummary(manifest);
   const installState = await readInstallState(gamePath);
@@ -1931,9 +2087,11 @@ async function previewSync(payload) {
 
 async function applySync(payload, onProgress = () => {}) {
   const preview = await previewSync(payload);
+  const gameId = defaultManifestGameId(preview.manifest);
+  const profile = getGameProfile(gameId);
   const repairMode = Boolean(payload?.repair);
   if (preview.gameCompatibility.checked && !preview.gameCompatibility.ok) {
-    throw new Error(`${preview.gameCompatibility.reason} Update 7 Days to Die in Steam before installing GDG mods.`);
+    throw new Error(`${preview.gameCompatibility.reason} Update ${profile.name} in Steam before installing GDG mods.`);
   }
 
   const spaceRequirement = getSyncSpaceRequirement(preview, { repairMode });
@@ -1946,7 +2104,7 @@ async function applySync(payload, onProgress = () => {}) {
     }
   }
 
-  const modsPath = path.join(payload.gamePath, "Mods");
+  const modsPath = getGameModsPath(payload.gamePath, gameId);
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const workRoot = getSyncWorkRoot(payload.gamePath);
   const backupRoot = path.join(workRoot, "backups", timestamp);
@@ -2007,7 +2165,7 @@ async function applySync(payload, onProgress = () => {}) {
         current,
         total
       });
-      const sourceFolder = await extractModArchive(archivePath, stagingRoot, item.mod);
+      const sourceFolder = await extractModArchive(archivePath, stagingRoot, item.mod, gameId);
       tempPaths.push(path.dirname(sourceFolder));
       const folderName = sanitizeFolderName(item.mod.folderName || path.basename(sourceFolder));
       const targetFolder = path.join(modsPath, folderName);
@@ -2291,7 +2449,8 @@ async function createFailedApplyResult(payload, error, onProgress = () => {}) {
 
 async function cleanLocalMods(payload, onProgress = () => {}) {
   const preview = await previewSync(payload);
-  const modsPath = path.resolve(payload.gamePath, "Mods");
+  const gameId = defaultManifestGameId(preview.manifest);
+  const modsPath = getGameModsPath(payload.gamePath, gameId);
   const localOnly = preview.plan.filter((item) => item.action === "keep" && item.installed?.folderPath);
   const mode = payload.mode === "delete" ? "delete" : "backup";
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -2472,19 +2631,21 @@ async function cleanLocalMods(payload, onProgress = () => {}) {
 }
 
 async function purgeModsFolder(payload, onProgress = () => {}) {
+  const gameId = await resolvePayloadGameId(payload);
+  const profile = getGameProfile(gameId);
   const rawGamePath = String(payload?.gamePath || "").trim();
 
   if (!rawGamePath) {
-    throw new Error("Select a 7 Days to Die folder first.");
+    throw new Error(`Select a ${profile.name} folder first.`);
   }
 
   const gamePath = path.resolve(rawGamePath);
 
-  if (!(await isSevenDaysGameRoot(gamePath))) {
-    throw new Error("That folder does not look like a 7 Days to Die install.");
+  if (!(await isGameRoot(gamePath, gameId))) {
+    throw new Error(`That folder does not look like a ${profile.name} install.`);
   }
 
-  const modsPath = path.join(gamePath, "Mods");
+  const modsPath = getGameModsPath(gamePath, gameId);
   await fsp.mkdir(modsPath, { recursive: true });
 
   const entries = await fsp.readdir(modsPath, { withFileTypes: true });
@@ -2623,7 +2784,7 @@ async function purgeModsFolder(payload, onProgress = () => {}) {
     total: purgeEntries.length
   });
 
-  const nextScan = await scanMods(gamePath, { hash: false });
+  const nextScan = await scanMods(gamePath, { hash: false, gameId });
   log.push(`${nextScan.mods.length} mod${nextScan.mods.length === 1 ? "" : "s"} remain after purge.`);
   const nextPreview = await previewAfterOptionalPurge(payload, log);
   await removeManagedModRecords(gamePath, purgedFolderNames);
@@ -2702,18 +2863,20 @@ function getUniqueBackupTarget(backupRoot, folderName, usedTargets) {
 }
 
 async function cleanManagedMods(payload, onProgress = () => {}) {
+  const gameId = await resolvePayloadGameId(payload);
+  const profile = getGameProfile(gameId);
   const gamePath = path.resolve(String(payload?.gamePath || ""));
-  if (!gamePath || !(await isSevenDaysGameRoot(gamePath))) {
-    throw new Error("Select a valid 7 Days to Die folder first.");
+  if (!gamePath || !(await isGameRoot(gamePath, gameId))) {
+    throw new Error(`Select a valid ${profile.name} folder first.`);
   }
 
   const mode = payload?.mode === "delete" ? "delete" : "backup";
   const scope = payload?.scope === "extra" ? "extra" : "all";
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupRoot = path.join(getSyncWorkRoot(gamePath), "backups", timestamp, scope === "extra" ? "extra-managed-mods" : "managed-mods");
-  const modsPath = path.join(gamePath, "Mods");
+  const modsPath = getGameModsPath(gamePath, gameId);
   let preview = null;
-  let local = await scanMods(gamePath, { hash: false });
+  let local = await scanMods(gamePath, { hash: false, gameId });
   const log = [];
   const failures = [];
   const removedManagedFolders = [];
@@ -2928,6 +3091,8 @@ async function resetAndReinstall(payload, onProgress = () => {}) {
 }
 
 async function runPreflightDoctor(payload = {}) {
+  const gameId = await resolvePayloadGameId(payload);
+  const profile = getGameProfile(gameId);
   const gamePath = path.resolve(String(payload.gamePath || ""));
   const checks = [];
   let preview = null;
@@ -2939,24 +3104,24 @@ async function runPreflightDoctor(payload = {}) {
   }
 
   if (!payload.gamePath) {
-    addCheck("game-folder", "Game folder", "fail", "No 7 Days to Die folder is selected.", "Choose a game folder.");
+    addCheck("game-folder", "Game folder", "fail", `No ${profile.name} folder is selected.`, "Choose a game folder.");
     return { ok: false, checks, preview: null };
   }
 
-  const validGameRoot = await isSevenDaysGameRoot(gamePath);
+  const validGameRoot = await isGameRoot(gamePath, gameId);
   addCheck(
     "game-folder",
     "Game folder",
     validGameRoot ? "pass" : "fail",
-    validGameRoot ? "Selected folder looks like 7 Days to Die." : "Selected folder does not look like a 7 Days to Die install.",
-    validGameRoot ? "" : "Browse to the 7 Days to Die install folder."
+    validGameRoot ? `Selected folder looks like ${profile.name}.` : `Selected folder does not look like a ${profile.name} install.`,
+    validGameRoot ? "" : `Browse to the ${profile.name} install folder.`
   );
 
   if (!validGameRoot) {
     return { ok: false, checks, preview: null };
   }
 
-  const modsPath = path.join(gamePath, "Mods");
+  const modsPath = getGameModsPath(gamePath, gameId);
   try {
     await fsp.mkdir(modsPath, { recursive: true });
     const probePath = path.join(modsPath, `.gdg-write-test-${Date.now()}.tmp`);
@@ -2975,7 +3140,7 @@ async function runPreflightDoctor(payload = {}) {
   }
 
   try {
-    local = await scanMods(gamePath, { hash: false });
+    local = await scanMods(gamePath, { hash: false, gameId });
   } catch (error) {
     addCheck("local-mods", "Installed mods", "fail", `Installed mods could not be scanned: ${error.message}`);
   }
@@ -2994,7 +3159,7 @@ async function runPreflightDoctor(payload = {}) {
           "Game version",
           preview.gameCompatibility.ok ? "pass" : "fail",
           preview.gameCompatibility.reason,
-          preview.gameCompatibility.ok ? "" : "Update 7 Days to Die in Steam, then retry the check."
+          preview.gameCompatibility.ok ? "" : `Update ${profile.name} in Steam, then retry the check.`
         );
       } else {
         addCheck("game-version", "Game version", "warn", preview.gameCompatibility.reason, "Publish a Steam build id for stricter checks.");
@@ -3041,21 +3206,23 @@ async function runPreflightDoctor(payload = {}) {
       serverOnlyLocal.length > 0 ? "Remove GDG-managed/server-only mods." : ""
     );
 
-    const dllMods = local.mods.filter((mod) => mod.hasDll);
-    const serverEacEnabled = typeof preview?.manifest?.server?.eacEnabled === "boolean" ? preview.manifest.server.eacEnabled : null;
-    const requestedEac = payload.launchWithEac !== undefined ? Boolean(payload.launchWithEac) : true;
-    const eacStatus = (serverEacEnabled !== null && serverEacEnabled !== requestedEac) || (requestedEac && dllMods.length > 0) ? "warn" : "pass";
-    addCheck(
-      "eac",
-      "EAC launch mode",
-      eacStatus,
-      serverEacEnabled !== null && serverEacEnabled !== requestedEac
-        ? `Server EAC is ${serverEacEnabled ? "on" : "off"}, but launcher is set to ${requestedEac ? "on" : "off"}.`
-        : requestedEac && dllMods.length > 0
-          ? `${dllMods.length} DLL mod${dllMods.length === 1 ? "" : "s"} detected while EAC launch is on.`
-          : "EAC setting looks compatible with the current scan.",
-      eacStatus === "warn" ? "Match the server EAC setting before launch." : ""
-    );
+    if (profile.supportsEac) {
+      const dllMods = local.mods.filter((mod) => mod.hasDll);
+      const serverEacEnabled = typeof preview?.manifest?.server?.eacEnabled === "boolean" ? preview.manifest.server.eacEnabled : null;
+      const requestedEac = payload.launchWithEac !== undefined ? Boolean(payload.launchWithEac) : true;
+      const eacStatus = (serverEacEnabled !== null && serverEacEnabled !== requestedEac) || (requestedEac && dllMods.length > 0) ? "warn" : "pass";
+      addCheck(
+        "eac",
+        "EAC launch mode",
+        eacStatus,
+        serverEacEnabled !== null && serverEacEnabled !== requestedEac
+          ? `Server EAC is ${serverEacEnabled ? "on" : "off"}, but launcher is set to ${requestedEac ? "on" : "off"}.`
+          : requestedEac && dllMods.length > 0
+            ? `${dllMods.length} DLL mod${dllMods.length === 1 ? "" : "s"} detected while EAC launch is on.`
+            : "EAC setting looks compatible with the current scan.",
+        eacStatus === "warn" ? "Match the server EAC setting before launch." : ""
+      );
+    }
 
     const managedExtra = preview?.managedSummary?.extra || 0;
     addCheck(
@@ -3123,10 +3290,12 @@ async function listBackups(gamePath) {
 }
 
 async function restoreBackup(payload, onProgress = () => {}) {
+  const gameId = await resolvePayloadGameId(payload);
+  const profile = getGameProfile(gameId);
   const gamePath = path.resolve(String(payload?.gamePath || ""));
   const backupPath = path.resolve(String(payload?.backupPath || ""));
-  if (!gamePath || !(await isSevenDaysGameRoot(gamePath))) {
-    throw new Error("Select a valid 7 Days to Die folder first.");
+  if (!gamePath || !(await isGameRoot(gamePath, gameId))) {
+    throw new Error(`Select a valid ${profile.name} folder first.`);
   }
 
   assertManagedBackupPath(gamePath, backupPath);
@@ -3134,7 +3303,7 @@ async function restoreBackup(payload, onProgress = () => {}) {
     throw new Error("Backup folder does not exist.");
   }
 
-  const modsPath = path.join(gamePath, "Mods");
+  const modsPath = getGameModsPath(gamePath, gameId);
   const entries = (await fsp.readdir(backupPath, { withFileTypes: true })).filter((entry) => entry.isDirectory() || entry.isFile() || entry.isSymbolicLink());
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   const overwrittenBackupRoot = path.join(getSyncWorkRoot(gamePath), "backups", timestamp, "restore-overwritten");
@@ -3256,10 +3425,12 @@ async function restoreBackup(payload, onProgress = () => {}) {
 }
 
 async function deleteBackup(payload = {}) {
+  const gameId = await resolvePayloadGameId(payload);
+  const profile = getGameProfile(gameId);
   const gamePath = path.resolve(String(payload.gamePath || ""));
   const backupPath = path.resolve(String(payload.backupPath || ""));
-  if (!gamePath || !(await isSevenDaysGameRoot(gamePath))) {
-    throw new Error("Select a valid 7 Days to Die folder first.");
+  if (!gamePath || !(await isGameRoot(gamePath, gameId))) {
+    throw new Error(`Select a valid ${profile.name} folder first.`);
   }
 
   assertManagedBackupPath(gamePath, backupPath);
@@ -3357,6 +3528,7 @@ async function loadServerDirectory(input) {
     if (!server.id || !server.name || !server.syncUrl) {
       throw new Error("Every server directory entry needs id, name, and syncUrl.");
     }
+    server.game = getGameProfile(server.game || directory.game || DEFAULT_GAME_ID).id;
   }
 
   return directory;
@@ -3367,7 +3539,7 @@ async function checkServerHealth(server) {
 
   try {
     const manifest = await loadManifest(server.syncUrl);
-    validateManifest(manifest);
+    validateManifest(manifest, server.game || manifest.game || DEFAULT_GAME_ID);
     const clientMods = (manifest.mods || []).filter(isClientInstallableManifestMod);
     const gameStatus = await gameStatusPromise;
     return {
@@ -3558,12 +3730,13 @@ async function getDiskSpace(gamePath) {
   };
 }
 
-async function getGameVersionInfo(gamePath) {
+async function getGameVersionInfo(gamePath, gameId = DEFAULT_GAME_ID) {
+  const profile = getGameProfile(gameId);
   const resolvedGamePath = path.resolve(String(gamePath || ""));
-  const appManifestPath = findSteamAppManifestPath(resolvedGamePath);
+  const appManifestPath = findSteamAppManifestPath(resolvedGamePath, gameId);
   const version = {
     gamePath: resolvedGamePath,
-    steamAppId: STEAM_APP_ID,
+    steamAppId: profile.steamAppId,
     steamAppManifestPath: "",
     steamBuildId: "",
     steamUpdateState: "",
@@ -3587,7 +3760,8 @@ async function getGameVersionInfo(gamePath) {
   };
 }
 
-function findSteamAppManifestPath(gamePath) {
+function findSteamAppManifestPath(gamePath, gameId = DEFAULT_GAME_ID) {
+  const profile = getGameProfile(gameId);
   if (!gamePath) {
     return "";
   }
@@ -3599,7 +3773,7 @@ function findSteamAppManifestPath(gamePath) {
   }
 
   const steamAppsDir = path.dirname(commonDir);
-  return path.join(steamAppsDir, `appmanifest_${STEAM_APP_ID}.acf`);
+  return path.join(steamAppsDir, `appmanifest_${profile.steamAppId}.acf`);
 }
 
 function parseSteamAppManifest(text) {
@@ -3611,7 +3785,8 @@ function parseSteamAppManifest(text) {
   return values;
 }
 
-function compareGameCompatibility(manifest, localVersion) {
+function compareGameCompatibility(manifest, localVersion, gameId = DEFAULT_GAME_ID) {
+  const profile = getGameProfile(gameId);
   const gameVersionMap = normalizeGameVersionMap(manifest.server?.gameVersionMap);
   const requiredSteamBuildId = String(manifest.server?.steamBuildId || "").trim();
   const requiredGameVersion = String(manifest.server?.gameVersion || gameVersionMap[requiredSteamBuildId] || "").trim();
@@ -3646,7 +3821,7 @@ function compareGameCompatibility(manifest, localVersion) {
       return {
         ok: false,
         checked: true,
-        reason: "Steam build could not be detected for this game folder.",
+        reason: `Steam build could not be detected for this ${profile.name} folder.`,
         local: localVersion,
         requiredGameVersion,
         requiredSteamBuildId,
@@ -3859,13 +4034,18 @@ function normalizeLocalPath(input) {
   return input;
 }
 
-function validateManifest(manifest) {
+function validateManifest(manifest, expectedGameId = DEFAULT_GAME_ID) {
+  const expectedProfile = getGameProfile(expectedGameId);
   if (!manifest || typeof manifest !== "object") {
     throw new Error("Manifest must be a JSON object.");
   }
 
-  if (manifest.game !== GAME_ID) {
-    throw new Error(`Manifest game must be "${GAME_ID}".`);
+  if (!GAME_PROFILES[manifest.game]) {
+    throw new Error(`Manifest game must be one of: ${Object.keys(GAME_PROFILES).join(", ")}.`);
+  }
+
+  if (manifest.game !== expectedProfile.id) {
+    throw new Error(`Manifest game "${manifest.game}" does not match selected game "${expectedProfile.id}".`);
   }
 
   if (!Array.isArray(manifest.mods)) {
@@ -4149,16 +4329,21 @@ async function downloadModArchiveOnce(mod, stagingRoot, onDownload = () => {}) {
   return archivePath;
 }
 
-async function extractModArchive(archivePath, stagingRoot, mod) {
+async function extractModArchive(archivePath, stagingRoot, mod, gameId = DEFAULT_GAME_ID) {
+  const profile = getGameProfile(gameId);
   const extractRoot = path.join(stagingRoot, sanitizeFolderName(`${mod.id || mod.name}-extract`));
   await fsp.rm(extractRoot, { recursive: true, force: true });
   await fsp.mkdir(extractRoot, { recursive: true });
 
   await extractZipToDirectory(archivePath, extractRoot);
 
-  const candidate = await findFolderWithModInfo(extractRoot);
+  const candidate = profile.modArchive === "modinfo-folder"
+    ? await findFolderWithModInfo(extractRoot)
+    : await findGenericPackageRoot(extractRoot);
   if (!candidate) {
-    throw new Error("Archive did not contain a folder with ModInfo.xml.");
+    throw new Error(profile.modArchive === "modinfo-folder"
+      ? "Archive did not contain a folder with ModInfo.xml."
+      : "Archive did not contain installable files.");
   }
 
   return candidate;
@@ -4263,6 +4448,21 @@ async function findFolderWithModInfo(root) {
   }
 
   return "";
+}
+
+async function findGenericPackageRoot(root) {
+  const entries = (await fsp.readdir(root, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() || entry.isFile());
+
+  if (entries.length === 0) {
+    return "";
+  }
+
+  if (entries.length === 1 && entries[0].isDirectory()) {
+    return path.join(root, entries[0].name);
+  }
+
+  return root;
 }
 
 async function hashDirectory(root) {

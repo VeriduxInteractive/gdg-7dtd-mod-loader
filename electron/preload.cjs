@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("gdg", {
   getInitialState: () => ipcRenderer.invoke("gdg:get-initial-state"),
   saveConfig: (config) => ipcRenderer.invoke("gdg:save-config", config),
-  detectGame: () => ipcRenderer.invoke("gdg:detect-game"),
+  detectGame: (payload) => ipcRenderer.invoke("gdg:detect-game", payload || {}),
   selectGameFolder: () => ipcRenderer.invoke("gdg:select-game-folder"),
   selectManifestFile: () => ipcRenderer.invoke("gdg:select-manifest-file"),
   loadServerDirectory: (input) => ipcRenderer.invoke("gdg:load-server-directory", { input }),

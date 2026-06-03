@@ -36,6 +36,7 @@ import type {
   DoctorResult,
   DirectoryServer,
   GameVersionInfo,
+  GameId,
   LoaderConfig,
   ScanResult,
   ServerDirectory,
@@ -57,6 +58,39 @@ const emptyConfig: LoaderConfig = {
 };
 
 const sampleSyncEndpoint = "http://40.160.20.5:8787/gdg-sync/manifest.json";
+const gameDefinitions: Record<GameId, {
+  id: GameId;
+  name: string;
+  shortName: string;
+  folderPlaceholder: string;
+  defaultServerId: string;
+  supportsEac: boolean;
+  copyName: string;
+  modsLabel: string;
+}> = {
+  "7dtd": {
+    id: "7dtd",
+    name: "7 Days to Die",
+    shortName: "7DTD",
+    folderPlaceholder: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\7 Days To Die",
+    defaultServerId: "gdg-test",
+    supportsEac: true,
+    copyName: "7 Days To Die - GDG",
+    modsLabel: "Mods"
+  },
+  repo: {
+    id: "repo",
+    name: "R.E.P.O.",
+    shortName: "R.E.P.O.",
+    folderPlaceholder: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\REPO",
+    defaultServerId: "gdg-repo",
+    supportsEac: false,
+    copyName: "R.E.P.O. - GDG",
+    modsLabel: "BepInEx plugins"
+  }
+};
+const gameOptions = Object.values(gameDefinitions);
+type GameDefinition = (typeof gameDefinitions)[GameId];
 
 type Tab = "sync" | "installed" | "settings";
 type LivePlanStatus = "active" | "ready" | "failed";
@@ -224,6 +258,7 @@ function App() {
   const progressPanelRef = useRef<HTMLElement | null>(null);
   const lastAutoScrolledProgressKey = useRef("");
   const lastVersionPromptKey = useRef("");
+  const selectedGame = gameDefinitions[config.gameId] || gameDefinitions["7dtd"];
 
   useEffect(() => {
     void initialize();
@@ -423,7 +458,7 @@ function App() {
       const nextConfig = initial.config || emptyConfig;
       setDetected(initial.detected);
       setConfig(nextConfig);
-      const directory = await loadDirectory(nextConfig.serverDirectoryInput);
+      const directory = await loadDirectory(nextConfig.serverDirectoryInput, nextConfig.gameId);
 
       const savedServerExists = directory.servers.some((server) => server.id === nextConfig.lastServerId);
       if ((!nextConfig.manifestInput || !savedServerExists) && directory.servers.length > 0) {
@@ -508,11 +543,48 @@ function App() {
     return updateConfig({ manifestInput });
   }
 
-  async function loadDirectory(input?: string) {
+  async function changeGame(gameId: GameId) {
+    if (gameId === config.gameId) {
+      return;
+    }
+
+    await runTask("Changing game", async () => {
+      clearSyncState();
+      setBackups([]);
+      setDiskSpace(null);
+      setGameVersion(null);
+      setLastClone(null);
+      const game = gameDefinitions[gameId];
+      const saved = await updateConfig({
+        gameId,
+        gamePath: "",
+        manifestInput: "",
+        lastServerId: game.defaultServerId,
+        launchWithEac: game.supportsEac
+      });
+      const result = await window.gdg.detectGame({ gameId });
+      setDetected(result);
+      const directory = await loadDirectory(saved.serverDirectoryInput, gameId);
+      if (directory.servers.length > 0) {
+        const firstServer = directory.servers.find(isRecommendedServer) || directory.servers[0];
+        const nextConfig = await updateConfig({
+          lastServerId: firstServer.id,
+          manifestInput: firstServer.syncUrl
+        });
+        setConfig(nextConfig);
+      }
+      setSetupDismissed(false);
+      setGuidedSetupOpen(false);
+      setOpenStep("setup");
+      return `${game.name} selected`;
+    });
+  }
+
+  async function loadDirectory(input?: string, gameId: GameId = config.gameId) {
     const directory = await window.gdg.loadServerDirectory(input);
     const visibleDirectory = {
       ...directory,
-      servers: directory.servers.filter((server) => !isLocalDevServer(server))
+      servers: directory.servers.filter((server) => serverMatchesGame(server, gameId) && !isLocalDevServer(server))
     };
     setServerDirectory(visibleDirectory);
 
@@ -529,7 +601,7 @@ function App() {
 
   async function refreshServerDirectory() {
     await runTask("Checking servers", async () => {
-      const directory = await loadDirectory(config.serverDirectoryInput);
+      const directory = await loadDirectory(config.serverDirectoryInput, config.gameId);
       const healthById = (directory as ServerDirectory & { healthById?: Record<string, ServerHealth> }).healthById || {};
       const syncCount = directory.servers.filter((server) => healthById[server.id]?.ok).length;
       const gameCount = directory.servers.filter((server) => getGameServerStatusValue(healthById[server.id]) === "online").length;
@@ -548,6 +620,7 @@ function App() {
 
     try {
       const nextPreview = await window.gdg.previewSync({
+        gameId: config.gameId,
         gamePath: config.gamePath,
         manifestInput: config.manifestInput
       });
@@ -555,6 +628,7 @@ function App() {
       setPreview(nextPreview);
       setScan(nextPreview.local);
       const doctorResult = await window.gdg.runDoctor({
+        gameId: config.gameId,
         gamePath: config.gamePath,
         manifestInput: config.manifestInput,
         launchWithEac: config.launchWithEac
@@ -581,7 +655,7 @@ function App() {
 
   async function detectGame() {
     await runTask("Detecting game", async () => {
-      const result = await window.gdg.detectGame();
+      const result = await window.gdg.detectGame({ gameId: config.gameId });
       setDetected(result);
       if (result.found && config.gamePath) {
         await updateConfig({ gamePath: result.path });
@@ -603,7 +677,7 @@ function App() {
     }
 
     await runTask("Finding game", async () => {
-      const result = await window.gdg.detectGame();
+      const result = await window.gdg.detectGame({ gameId: config.gameId });
       setDetected(result);
       setSetupDismissed(false);
 
@@ -632,7 +706,7 @@ function App() {
       if (!result.canceled) {
         const saved = await updateGamePath(result.path);
         if (!result.valid) {
-          setError("Folder selected. It does not look like a 7 Days to Die install yet.");
+          setError(`Folder selected. It does not look like a ${selectedGame.name} install yet.`);
           return;
         }
 
@@ -654,7 +728,7 @@ function App() {
 
   async function selectDetectedInstall(continueGuided: boolean) {
     if (!detected?.found) {
-      setError("No detected 7 Days to Die install.");
+      setError(`No detected ${selectedGame.name} install.`);
       return;
     }
 
@@ -677,13 +751,13 @@ function App() {
 
   async function createGdgCopyInternal(continueGuided: boolean) {
     if (!detected?.found) {
-      setError("No detected 7 Days to Die install.");
+      setError(`No detected ${selectedGame.name} install.`);
       return;
     }
 
     setSyncProgress({
       phase: "preparing",
-      message: "Preparing GDG copy.",
+      message: `Preparing ${selectedGame.shortName} GDG copy.`,
       current: 0,
       total: 0,
       percent: 0
@@ -691,8 +765,9 @@ function App() {
 
     await runTask("Creating GDG copy", async () => {
       const result = await window.gdg.cloneGameInstall({
+        gameId: config.gameId,
         sourcePath: detected.path,
-        folderName: "7 Days To Die - GDG",
+        folderName: selectedGame.copyName,
         createShortcut
       });
 
@@ -722,7 +797,7 @@ function App() {
 
   async function changeInstallSetup() {
     await runTask("Changing install setup", async () => {
-      const result = await window.gdg.detectGame();
+      const result = await window.gdg.detectGame({ gameId: config.gameId });
       setDetected(result);
       await updateGamePath("");
       setSetupDismissed(false);
@@ -777,6 +852,7 @@ function App() {
   async function runPreflightDoctor() {
     await runTask("Checking setup", async () => {
       const result = await window.gdg.runDoctor({
+        gameId: config.gameId,
         gamePath: config.gamePath,
         manifestInput: config.manifestInput,
         launchWithEac: config.launchWithEac
@@ -798,7 +874,7 @@ function App() {
 
     setSyncProgress({
       phase: "scanning",
-      message: "Checking your Mods folder against the server list.",
+      message: `Checking your ${selectedGame.modsLabel} against the server list.`,
       current: 0,
       total: 1,
       percent: 8
@@ -806,6 +882,7 @@ function App() {
 
     await runTask("Checking server mods", async () => {
       const result = await window.gdg.previewSync({
+        gameId: config.gameId,
         gamePath: effectiveGamePath,
         manifestInput: effectiveManifestInput
       });
@@ -815,6 +892,7 @@ function App() {
       setScan(result.local);
       setApplyResult(null);
       const doctorResult = await window.gdg.runDoctor({
+        gameId: config.gameId,
         gamePath: effectiveGamePath,
         manifestInput: effectiveManifestInput,
         launchWithEac: config.launchWithEac
@@ -824,13 +902,13 @@ function App() {
       if (result.gameCompatibility.checked && !result.gameCompatibility.ok) {
         const promptKey = `${effectiveGamePath}|${effectiveManifestInput}|${result.gameCompatibility.reason}`;
         setOpenStep("check");
-        setError(`${result.gameCompatibility.reason} Update 7 Days to Die in Steam before installing GDG mods.`);
+        setError(`${result.gameCompatibility.reason} Update ${selectedGame.name} in Steam before installing GDG mods.`);
         setMessage("Game update needed");
 
         if (options.promptSteam !== false && lastVersionPromptKey.current !== promptKey) {
           lastVersionPromptKey.current = promptKey;
           window.setTimeout(() => {
-            const shouldOpenSteam = window.confirm(`${result.gameCompatibility.reason}\n\nOpen 7 Days to Die in Steam now so you can update it?`);
+            const shouldOpenSteam = window.confirm(`${result.gameCompatibility.reason}\n\nOpen ${selectedGame.name} in Steam now so you can update it?`);
             if (shouldOpenSteam) {
               void openSteamUpdate();
             }
@@ -918,7 +996,7 @@ function App() {
       return;
     }
 
-    const nextServerEacEnabled = typeof nextPreview.manifest.server.eacEnabled === "boolean" ? nextPreview.manifest.server.eacEnabled : null;
+    const nextServerEacEnabled = selectedGame.supportsEac && typeof nextPreview.manifest.server.eacEnabled === "boolean" ? nextPreview.manifest.server.eacEnabled : null;
     if (typeof nextServerEacEnabled === "boolean" && nextServerEacEnabled !== Boolean(config.launchWithEac)) {
       await updateLaunchWithEac(nextServerEacEnabled);
       setMessage(`EAC set ${nextServerEacEnabled ? "on" : "off"}. Ready to launch.`);
@@ -954,6 +1032,7 @@ function App() {
 
     await runTask("Syncing mods", async () => {
       const result = await window.gdg.applySync({
+        gameId: config.gameId,
         gamePath: effectiveGamePath,
         manifestInput: effectiveManifestInput
       });
@@ -988,6 +1067,7 @@ function App() {
 
     await runTask("Repairing mods", async () => {
       const result = await window.gdg.applySync({
+        gameId: config.gameId,
         gamePath: config.gamePath,
         manifestInput: config.manifestInput,
         repair: true
@@ -1021,6 +1101,7 @@ function App() {
 
     await runTask(mode === "delete" ? "Deleting local-only mods" : "Cleaning local-only mods", async () => {
       const result = await window.gdg.cleanLocalMods({
+        gameId: config.gameId,
         gamePath: effectiveGamePath,
         manifestInput: effectiveManifestInput,
         mode
@@ -1054,6 +1135,7 @@ function App() {
 
     await runTask(mode === "delete" ? "Deleting all mods" : "Backing up all mods", async () => {
       const result = await window.gdg.purgeModsFolder({
+        gameId: config.gameId,
         gamePath: config.gamePath,
         manifestInput: config.manifestInput,
         mode
@@ -1078,7 +1160,7 @@ function App() {
       }
 
       if (!result.ok) {
-        setError(`${result.failedCount || 1} Mods folder item${result.failedCount === 1 ? "" : "s"} could not be ${mode === "delete" ? "deleted" : "moved"}. Check the log below.`);
+        setError(`${result.failedCount || 1} ${selectedGame.modsLabel} item${result.failedCount === 1 ? "" : "s"} could not be ${mode === "delete" ? "deleted" : "moved"}. Check the log below.`);
         return "Needs attention";
       }
 
@@ -1088,7 +1170,7 @@ function App() {
 
       return result.log.some((line) => line.startsWith("Deleted "))
         ? "Mods deleted. Install missing mods to redownload."
-        : "Mods folder is already empty.";
+        : `${selectedGame.modsLabel} is already empty.`;
     });
   }
 
@@ -1108,6 +1190,7 @@ function App() {
 
     await runTask(mode === "delete" ? "Deleting managed mods" : "Backing up managed mods", async () => {
       const result = await window.gdg.cleanManagedMods({
+        gameId: config.gameId,
         gamePath: effectiveGamePath,
         manifestInput: effectiveManifestInput,
         mode,
@@ -1143,6 +1226,7 @@ function App() {
 
     await runTask(mode === "delete" ? "Deleting and reinstalling" : "Backing up and reinstalling", async () => {
       const result = await window.gdg.resetAndReinstall({
+        gameId: config.gameId,
         gamePath: config.gamePath,
         manifestInput: config.manifestInput,
         mode
@@ -1183,6 +1267,7 @@ function App() {
 
     await runTask("Restoring backup", async () => {
       const result = await window.gdg.restoreBackup({
+        gameId: config.gameId,
         gamePath: config.gamePath,
         backupPath
       });
@@ -1208,6 +1293,7 @@ function App() {
   async function deleteBackup(backup: BackupEntry) {
     await runTask("Deleting backup", async () => {
       const result = await window.gdg.deleteBackup({
+        gameId: config.gameId,
         gamePath: config.gamePath,
         backupPath: backup.path
       });
@@ -1248,7 +1334,7 @@ function App() {
 
   async function launchGame() {
     if (gameVersionMismatch) {
-      setError("Update 7 Days to Die in Steam before launching this GDG modpack.");
+      setError(`Update ${selectedGame.name} in Steam before launching this GDG modpack.`);
       setOpenStep("check");
       return;
     }
@@ -1259,10 +1345,11 @@ function App() {
 
     try {
       const result = await window.gdg.launchGame({
+        gameId: config.gameId,
         gamePath: config.gamePath,
         eacEnabled: Boolean(config.launchWithEac)
       });
-      setMessage(result.eacEnabled ? "Launched with EAC" : "Launched with EAC off");
+      setMessage(selectedGame.supportsEac ? (result.eacEnabled ? "Launched with EAC" : "Launched with EAC off") : `${selectedGame.name} launched`);
     } catch (launchError) {
       const nextError = launchError instanceof Error ? launchError.message : String(launchError);
       setError(nextError);
@@ -1276,7 +1363,7 @@ function App() {
     if (scan?.modsPath) {
       await window.gdg.openPath(scan.modsPath);
     } else if (config.gamePath) {
-      await window.gdg.openPath(`${config.gamePath}\\Mods`);
+      await window.gdg.openPath(config.gameId === "repo" ? `${config.gamePath}\\BepInEx\\plugins` : `${config.gamePath}\\Mods`);
     }
   }
 
@@ -1287,8 +1374,8 @@ function App() {
         throw new Error(result.error || "Steam could not be opened.");
       }
       return result.target === "web"
-        ? "Steam page opened. Update 7 Days to Die, then check server mods again."
-        : "Steam opened. Update 7 Days to Die, then check server mods again.";
+        ? `Steam page opened. Update ${selectedGame.name}, then check server mods again.`
+        : `Steam opened. Update ${selectedGame.name}, then check server mods again.`;
     });
   }
 
@@ -1366,7 +1453,9 @@ function App() {
   const selectedHealth = selectedServer ? serverHealth[selectedServer.id] : null;
   const selectedServerName = selectedServer?.name || preview?.manifest.server.name || "Golden Days Gaming";
   const showingSupportProgress = Boolean(syncProgress && isSupportBundleProgress(syncProgress));
-  const serverEacEnabled = typeof preview?.manifest.server.eacEnabled === "boolean" ? preview.manifest.server.eacEnabled : selectedHealth?.eacEnabled ?? null;
+  const serverEacEnabled = selectedGame.supportsEac
+    ? typeof preview?.manifest.server.eacEnabled === "boolean" ? preview.manifest.server.eacEnabled : selectedHealth?.eacEnabled ?? null
+    : null;
   const requiredSteamBuildId = preview?.gameCompatibility.requiredSteamBuildId || selectedHealth?.steamBuildId || "";
   const gameVersionMap = preview?.gameCompatibility.gameVersionMap || preview?.manifest.server.gameVersionMap || selectedHealth?.gameVersionMap || {};
   const mappedRequiredGameVersion = getGameVersionForBuild(requiredSteamBuildId, gameVersionMap);
@@ -1422,15 +1511,15 @@ function App() {
   const scanMatchesGame = Boolean(currentScan);
   const dllMods = currentScan ? currentScan.mods.filter((mod) => mod.hasDll) : [];
   const hasDllMods = dllMods.length > 0;
-  const eacMismatch = typeof serverEacEnabled === "boolean" && serverEacEnabled !== Boolean(config.launchWithEac);
-  const eacWarning = (hasDllMods && Boolean(config.launchWithEac)) || eacMismatch;
+  const eacMismatch = selectedGame.supportsEac && typeof serverEacEnabled === "boolean" && serverEacEnabled !== Boolean(config.launchWithEac);
+  const eacWarning = selectedGame.supportsEac && ((hasDllMods && Boolean(config.launchWithEac)) || eacMismatch);
   const launchHint = !scanMatchesGame
     ? "Checking installed mods for DLL files."
     : gameVersionMismatch
-      ? "Update 7 Days to Die in Steam before launching."
+      ? `Update ${selectedGame.name} in Steam before launching.`
     : eacMismatch
       ? `Server EAC is ${serverEacEnabled ? "on" : "off"}. Match this before launching.`
-    : hasDllMods
+    : selectedGame.supportsEac && hasDllMods
       ? `${dllMods.length} DLL mod${dllMods.length === 1 ? "" : "s"} detected. EAC off recommended.`
       : "No DLL mods detected in the selected install.";
   const serverEacLabel = typeof serverEacEnabled === "boolean" ? (serverEacEnabled ? "On" : "Off") : "Unknown";
@@ -1514,7 +1603,7 @@ function App() {
         }
       : {
           tone: "gold",
-          title: "Next up: find 7 Days to Die",
+          title: `Next up: find ${selectedGame.name}`,
           detail: "GDG needs the local game folder before it can compare mods.",
           label: "Detect Game",
           icon: <Search size={18} />,
@@ -1545,12 +1634,12 @@ function App() {
         : gameVersionMismatch
           ? {
               tone: "warn",
-              title: "Next up: update 7 Days to Die",
+              title: `Next up: update ${selectedGame.name}`,
               detail: "Steam needs to match the selected GDG server version before install.",
               label: "Open Steam",
               icon: <RefreshCw size={18} />,
               onClick: openSteamUpdate,
-              previewText: "Steam will open so you can update 7 Days to Die to the server version.",
+              previewText: `Steam will open so you can update ${selectedGame.name} to the server version.`,
               disabled: working
             }
           : syncSpaceBlocked
@@ -1660,7 +1749,7 @@ function App() {
                         },
                         disabled: working
                       }
-                    : eacWarning && typeof serverEacEnabled === "boolean" && serverEacEnabled !== Boolean(config.launchWithEac)
+                    : selectedGame.supportsEac && eacWarning && typeof serverEacEnabled === "boolean" && serverEacEnabled !== Boolean(config.launchWithEac)
                       ? {
                           tone: "warn",
                           title: "Next up: match EAC",
@@ -1670,7 +1759,7 @@ function App() {
                           onClick: () => void continueGuidedFlow(),
                           disabled: working
                         }
-                      : eacWarning && hasDllMods && config.launchWithEac
+                      : selectedGame.supportsEac && eacWarning && hasDllMods && config.launchWithEac
                         ? {
                             tone: "warn",
                             title: "Next up: turn EAC off",
@@ -1696,7 +1785,7 @@ function App() {
       key: "game-folder",
       tone: "gold",
       title: "Game folder needed",
-      detail: detected?.found ? "Use the detected install or create a separate GDG copy." : "GDG needs to find 7 Days to Die on this PC.",
+      detail: detected?.found ? "Use the detected install or create a separate GDG copy." : `GDG needs to find ${selectedGame.name} on this PC.`,
       label: detected?.found ? "Choose Folder" : "Detect Game",
       icon: detected?.found ? <FolderOpen size={18} /> : <Search size={18} />,
       onClick: detected?.found ? () => setOpenStep("setup") : detectGame,
@@ -1763,7 +1852,7 @@ function App() {
       disabled: working
     });
   }
-  if (preview && eacMismatch && typeof serverEacEnabled === "boolean") {
+  if (selectedGame.supportsEac && preview && eacMismatch && typeof serverEacEnabled === "boolean") {
     problemCards.push({
       key: "eac-server",
       tone: "warn",
@@ -1774,7 +1863,7 @@ function App() {
       onClick: () => void updateLaunchWithEac(Boolean(serverEacEnabled)),
       disabled: working
     });
-  } else if (preview && hasDllMods && config.launchWithEac) {
+  } else if (selectedGame.supportsEac && preview && hasDllMods && config.launchWithEac) {
     problemCards.push({
       key: "eac-dll",
       tone: "warn",
@@ -1858,9 +1947,27 @@ function App() {
           </div>
           <div>
             <h1>GDG Mod Loader</h1>
-            <span>7 Days to Die</span>
+            <span>{selectedGame.name}</span>
           </div>
         </div>
+
+        <section className="game-switcher" aria-label="Game selector">
+          <span className="section-label">Game</span>
+          <div className="game-switcher-options">
+            {gameOptions.map((game) => (
+              <button
+                key={game.id}
+                className={config.gameId === game.id ? "active" : ""}
+                type="button"
+                onClick={() => void changeGame(game.id)}
+                disabled={working}
+                aria-pressed={config.gameId === game.id}
+              >
+                {game.shortName}
+              </button>
+            ))}
+          </div>
+        </section>
 
         <section className="server-list" aria-label="Server profiles">
           <div className="server-list-heading">
@@ -1884,7 +1991,7 @@ function App() {
                 <Server size={18} />
                 <span>
                   <strong>{server.name}</strong>
-                  <small>{server.host}:{server.gamePort || 26900}</small>
+                  <small>{server.host ? `${server.host}${server.gamePort ? `:${server.gamePort}` : ""}` : gameDefinitions[server.game || "7dtd"]?.name || "Mod sync"}</small>
                   <small className={getGameServerStatusClass(health)}>
                     {getGameServerStatusLabel(health)}
                   </small>
@@ -1896,7 +2003,7 @@ function App() {
                     <em>{getServerKindLabel(server)}</em>
                     <em className={getGameServerBadgeClass(health)}>{getGameServerBadgeLabel(health)}</em>
                     <em>{getServerVersionLabel(health)}</em>
-                    <em>EAC {typeof health?.eacEnabled === "boolean" ? (health.eacEnabled ? "On" : "Off") : "?"}</em>
+                    {selectedGame.supportsEac && <em>EAC {typeof health?.eacEnabled === "boolean" ? (health.eacEnabled ? "On" : "Off") : "?"}</em>}
                     <em>{health?.ok ? formatKnownBytes(health.installedBytes, health.installedSizeKnown) : "Size ?"}</em>
                   </span>
                 </span>
@@ -1919,11 +2026,11 @@ function App() {
             <StatusRow icon={<Server size={17} />} label="Game server" value={selectedGameServerStatus} />
             <StatusRow icon={<UploadCloud size={17} />} label="Mod sync" value={selectedHealth?.ok ? "Available" : config.manifestInput ? "Unavailable" : "Missing"} />
             <StatusRow icon={<RefreshCw size={17} />} label="Version" value={serverVersionLabel} />
-            <StatusRow icon={serverEacEnabled ? <ShieldCheck size={17} /> : <ShieldOff size={17} />} label="EAC" value={serverEacLabel} />
+            {selectedGame.supportsEac && <StatusRow icon={serverEacEnabled ? <ShieldCheck size={17} /> : <ShieldOff size={17} />} label="EAC" value={serverEacLabel} />}
           </div>
           <div className="status-group" aria-label="Launch status">
             <span className="status-group-title">Launch</span>
-            <StatusRow icon={config.launchWithEac ? <ShieldCheck size={17} /> : <ShieldOff size={17} />} label="EAC" value={config.launchWithEac ? "On" : "Off"} />
+            {selectedGame.supportsEac && <StatusRow icon={config.launchWithEac ? <ShieldCheck size={17} /> : <ShieldOff size={17} />} label="EAC" value={config.launchWithEac ? "On" : "Off"} />}
             <StatusRow icon={<ListChecks size={17} />} label="Next action" value={nextAction} />
           </div>
         </section>
@@ -1932,7 +2039,7 @@ function App() {
           <div>
             <span className="section-label">Play</span>
             <strong>{config.gamePath ? "Ready to launch" : "Choose game folder"}</strong>
-            <small>Launch EAC {config.launchWithEac ? "on" : "off"} - server {serverEacLabel.toLowerCase()}</small>
+            <small>{selectedGame.supportsEac ? `Launch EAC ${config.launchWithEac ? "on" : "off"} - server ${serverEacLabel.toLowerCase()}` : selectedGame.name}</small>
           </div>
           <button className="sidebar-launch-button" type="button" onClick={launchGame} disabled={working || !config.gamePath || gameVersionMismatch}>
             <Play size={17} />
@@ -2020,6 +2127,7 @@ function App() {
                 <SetupChoicePanel
                   detected={detected}
                   detectedSetupLabel={detectedSetupLabel}
+                  game={selectedGame}
                   createShortcut={createShortcut}
                   onCreateShortcutChange={setCreateShortcut}
                   onUseExisting={useDetectedInstallAndContinue}
@@ -2054,7 +2162,8 @@ function App() {
                 <ReadyPanel
                   serverName={selectedServerName}
                   folderName={selectedGameFolderLabel}
-                  eacLabel={config.launchWithEac ? "On" : "Off"}
+                  eacLabel={selectedGame.supportsEac ? (config.launchWithEac ? "On" : "Off") : ""}
+                  supportsEac={selectedGame.supportsEac}
                   onLaunch={launchGame}
                   disabled={working}
                 />
@@ -2065,14 +2174,14 @@ function App() {
                 <StepSection
                   number="1"
                   title="Choose Game Folder"
-                  summary={config.gamePath ? `${installProfile.label} selected` : "Pick where GDG should prepare 7 Days to Die"}
+                  summary={config.gamePath ? `${installProfile.label} selected` : `Pick where GDG should prepare ${selectedGame.name}`}
                   state={setupStepState}
                   open={openStep === "setup"}
                   onToggle={() => setOpenStep(openStep === "setup" ? "" : "setup")}
                 >
                   <div className="step-body">
                     <p className="step-copy">
-                      GDG can keep vanilla untouched by making a separate copy, or it can install mods into your existing 7 Days to Die folder.
+                      GDG can keep vanilla untouched by making a separate copy, or it can install mods into your existing {selectedGame.name} folder.
                     </p>
 
                     {config.gamePath && (
@@ -2112,6 +2221,7 @@ function App() {
                       <SetupChoicePanel
                         detected={detected}
                         detectedSetupLabel={detectedSetupLabel}
+                        game={selectedGame}
                         createShortcut={createShortcut}
                         onCreateShortcutChange={setCreateShortcut}
                         onUseExisting={useDetectedInstall}
@@ -2125,12 +2235,12 @@ function App() {
                     {(!config.gamePath || advancedMode) && (
                       <label>
                         <span>Game folder</span>
-                        <small className="field-help">This is the 7 Days to Die folder GDG will check, sync, and launch.</small>
+                        <small className="field-help">This is the {selectedGame.name} folder GDG will check, sync, and launch.</small>
                         <div className="input-row">
                           <input
                             value={config.gamePath}
                             onChange={(event) => void updateGamePath(event.target.value)}
-                            placeholder="C:\Program Files (x86)\Steam\steamapps\common\7 Days To Die"
+                            placeholder={selectedGame.folderPlaceholder}
                           />
                           <button type="button" onClick={detectGame} disabled={working} title="Detect game">
                             <Search size={17} />
@@ -2201,7 +2311,7 @@ function App() {
                           <div className="steam-update-help">
                             <strong>Steam controls game updates.</strong>
                             <ol>
-                              <li>Open Steam and select 7 Days to Die.</li>
+                              <li>Open Steam and select {selectedGame.name}.</li>
                               <li>Go to Properties, then Betas.</li>
                               <li>Choose the public/current branch or the server version shown above.</li>
                               <li>Wait for Steam to finish updating, then come back and click Check Server Mods.</li>
@@ -2217,7 +2327,7 @@ function App() {
                           <ListChecks size={16} />
                           Setup checks
                         </summary>
-                        <DoctorPanel result={doctor} failures={doctorFailures} warnings={doctorWarnings} onRun={runPreflightDoctor} disabled={working || !config.gamePath} />
+                        <DoctorPanel result={doctor} failures={doctorFailures} warnings={doctorWarnings} supportsEac={selectedGame.supportsEac} onRun={runPreflightDoctor} disabled={working || !config.gamePath} />
                       </details>
                     )}
 
@@ -2234,7 +2344,7 @@ function App() {
                             <input
                               value={config.manifestInput}
                               onChange={(event) => void updateManifestInput(event.target.value)}
-                              placeholder={sampleSyncEndpoint}
+                              placeholder={selectedServer?.syncUrl || sampleSyncEndpoint}
                             />
                             <button type="button" onClick={browseManifestFile} disabled={working} title="Browse manifest">
                               <FolderOpen size={17} />
@@ -2250,7 +2360,7 @@ function App() {
                           <input
                             value={config.manifestInput}
                             onChange={(event) => void updateManifestInput(event.target.value)}
-                            placeholder={sampleSyncEndpoint}
+                            placeholder={selectedServer?.syncUrl || sampleSyncEndpoint}
                           />
                           <button type="button" onClick={browseManifestFile} disabled={working} title="Browse manifest">
                             <FolderOpen size={17} />
@@ -2332,7 +2442,7 @@ function App() {
                       <div className="local-only-warning danger">
                         <AlertTriangle size={18} />
                         <span>
-                          <strong>Update 7 Days to Die before installing</strong>
+                          <strong>Update {selectedGame.name} before installing</strong>
                           <small>{gameCompatibility?.reason || "The selected game folder does not match the selected server version."}</small>
                         </span>
                       </div>
@@ -2442,8 +2552,8 @@ function App() {
 
                 <StepSection
                   number="4"
-                  title="Launch 7 Days to Die"
-                  summary={config.gamePath ? `Launch EAC ${config.launchWithEac ? "on" : "off"} - server ${serverEacLabel.toLowerCase()}` : "Choose a game folder first"}
+                  title={`Launch ${selectedGame.name}`}
+                  summary={config.gamePath ? (selectedGame.supportsEac ? `Launch EAC ${config.launchWithEac ? "on" : "off"} - server ${serverEacLabel.toLowerCase()}` : `Launch ${selectedGame.name}`) : "Choose a game folder first"}
                   state={launchStepState}
                   open={openStep === "launch"}
                   onToggle={() => setOpenStep(openStep === "launch" ? "" : "launch")}
@@ -2452,14 +2562,14 @@ function App() {
                     {config.gamePath ? (
                       <div className={`launch-card ${eacWarning ? "warn" : "ready"}`}>
                         <div className="launch-copy">
-                          {config.launchWithEac ? <ShieldCheck size={20} /> : <ShieldOff size={20} />}
+                          {selectedGame.supportsEac ? (config.launchWithEac ? <ShieldCheck size={20} /> : <ShieldOff size={20} />) : <Play size={20} />}
                           <span>
-                            <strong>Launch 7 Days to Die</strong>
+                            <strong>Launch {selectedGame.name}</strong>
                             <small>{launchHint}</small>
                             {hasDllMods && <small>DLL mods: {dllMods.map((mod) => mod.displayName).join(", ")}</small>}
                           </span>
                         </div>
-                        {advancedMode && (
+                        {selectedGame.supportsEac && advancedMode && (
                           <div className="eac-toggle" role="group" aria-label="Easy Anti-Cheat launch mode">
                             <button
                               className={config.launchWithEac ? "active" : ""}
@@ -2742,8 +2852,8 @@ function App() {
               <SettingItem label="Local Steam build" value={gameVersion?.steamBuildId || "Unknown"} />
               <SettingItem label="Server game version" value={requiredGameVersion || "Not published"} />
               <SettingItem label="Server Steam build" value={requiredSteamBuildId || "Not published"} />
-              <SettingItem label="Server EAC" value={serverEacLabel} />
-              <SettingItem label="Launch EAC" value={config.launchWithEac ? "On" : "Off"} />
+              {selectedGame.supportsEac && <SettingItem label="Server EAC" value={serverEacLabel} />}
+              {selectedGame.supportsEac && <SettingItem label="Launch EAC" value={config.launchWithEac ? "On" : "Off"} />}
               <SettingItem label="DLL mod warning" value={hasDllMods ? `${dllMods.length} mod${dllMods.length === 1 ? "" : "s"} detected` : scanMatchesGame ? "No DLL mods detected" : "Checking"} />
               <SettingItem label="GDG-managed mods" value={`${managedInstalledMods.length} installed`} />
               <SettingItem label="Server-only local mods" value={`${serverOnlyInstalledMods.length} detected`} />
@@ -2753,7 +2863,7 @@ function App() {
               <SettingItem label="Selected server mods" value={serverSize.known ? formatBytes(serverSize.bytes) : "Unknown"} />
               <SettingItem label="Server mod list link" value={config.manifestInput || "Not set"} />
               <SettingItem label="Server directory" value={config.serverDirectoryInput || "Built-in sample"} />
-              <SettingItem label="Game adapter" value="7dtd" />
+              <SettingItem label="Game adapter" value={config.gameId} />
             </div>
           </section>
         )}
@@ -2826,6 +2936,7 @@ function SelectedFolderCard({
 function SetupChoicePanel({
   detected,
   detectedSetupLabel,
+  game,
   createShortcut,
   onCreateShortcutChange,
   onUseExisting,
@@ -2836,6 +2947,7 @@ function SetupChoicePanel({
 }: {
   detected: DetectedGame | null;
   detectedSetupLabel: string;
+  game: GameDefinition;
   createShortcut: boolean;
   onCreateShortcutChange: (value: boolean) => void;
   onUseExisting: () => void | Promise<void>;
@@ -2847,18 +2959,18 @@ function SetupChoicePanel({
   const hasDetectedGame = Boolean(detected?.found);
   const browseLabel = hasDetectedGame ? "Browse different folder" : "Choose game folder";
   const browseHelp = hasDetectedGame
-    ? "Choose a specific 7 Days to Die folder on this PC."
-    : "Browse to the folder that contains 7DaysToDie.exe.";
+    ? `Choose a specific ${game.name} folder on this PC.`
+    : `Browse to the folder that contains ${game.id === "repo" ? "REPO.exe" : "7DaysToDie.exe"}.`;
 
   return (
     <div className="setup-panel">
       <div className="setup-heading">
         <div>
           <span className="section-label">Game Setup</span>
-          <strong>{hasDetectedGame ? "Choose how GDG should prepare 7 Days to Die." : "Choose your 7 Days to Die folder."}</strong>
+          <strong>{hasDetectedGame ? `Choose how GDG should prepare ${game.name}.` : `Choose your ${game.name} folder.`}</strong>
           <p>
             {hasDetectedGame
-              ? "A GDG copy is safest for most players. It creates a separate folder beside the detected game and starts with a clean Mods folder."
+              ? `A GDG copy is safest for most players. It creates a separate folder beside the detected game and starts with clean ${game.modsLabel}.`
               : "GDG could not find the game automatically. Pick the folder you want Make Me Ready to prepare."}
           </p>
           {hasDetectedGame && <small>{detectedSetupLabel}: {detected?.path}</small>}
@@ -2876,7 +2988,7 @@ function SetupChoicePanel({
                 <small>
                   {detected?.isGdgCopy
                     ? "Select the detected modded copy. This will not point at your vanilla Steam folder."
-                    : "Use your current 7 Days to Die folder. GDG mods will be installed into this game."}
+                    : `Use your current ${game.name} folder. GDG mods will be installed into this game.`}
                 </small>
               </span>
             </button>
@@ -2884,7 +2996,7 @@ function SetupChoicePanel({
               <Copy size={20} />
               <span>
                 <strong>Create GDG copy <em>Recommended</em></strong>
-                <small>Make a separate folder named 7 Days To Die - GDG with a clean Mods folder.</small>
+                <small>Make a separate folder named {game.copyName} with clean {game.modsLabel}.</small>
               </span>
             </button>
           </>
@@ -3100,12 +3212,14 @@ function ReadyPanel({
   serverName,
   folderName,
   eacLabel,
+  supportsEac,
   onLaunch,
   disabled
 }: {
   serverName: string;
   folderName: string;
   eacLabel: string;
+  supportsEac: boolean;
   onLaunch: () => void | Promise<void>;
   disabled: boolean;
 }) {
@@ -3114,7 +3228,7 @@ function ReadyPanel({
       <CheckCircle2 size={22} />
       <span>
         <strong>You are ready to play</strong>
-        <small>{serverName} - {folderName} - EAC {eacLabel}</small>
+        <small>{supportsEac ? `${serverName} - ${folderName} - EAC ${eacLabel}` : `${serverName} - ${folderName}`}</small>
       </span>
       <button className="primary" type="button" onClick={onLaunch} disabled={disabled}>
         <Play size={17} />
@@ -3238,6 +3352,10 @@ function getGameServerBadgeClass(health?: ServerHealth | null) {
 }
 
 function getServerKindLabel(server: DirectoryServer) {
+  if (server.game === "repo") {
+    return "R.E.P.O.";
+  }
+
   const id = server.id.toLowerCase();
   const name = server.name.toLowerCase();
   if (id.includes("pvp") || name.includes("pvp")) {
@@ -3297,12 +3415,14 @@ function DoctorPanel({
   result,
   failures,
   warnings,
+  supportsEac,
   onRun,
   disabled
 }: {
   result: DoctorResult | null;
   failures: number;
   warnings: number;
+  supportsEac: boolean;
   onRun: () => void;
   disabled: boolean;
 }) {
@@ -3312,7 +3432,7 @@ function DoctorPanel({
         <ListChecks size={18} />
         <span>
           <strong>{result ? (result.ok ? "Setup looks ready" : "Setup needs attention") : "Setup checks"}</strong>
-          <small>{result ? `${failures} fail / ${warnings} warn / ${result.checks.length} checks` : "Checks folder, version, space, EAC, and mod safety"}</small>
+          <small>{result ? `${failures} fail / ${warnings} warn / ${result.checks.length} checks` : supportsEac ? "Checks folder, version, space, EAC, and mod safety" : "Checks folder, version, space, and mod safety"}</small>
         </span>
         <button className="secondary slim" type="button" onClick={onRun} disabled={disabled}>
           <RefreshCw size={16} />
@@ -3713,6 +3833,10 @@ function getInstallProfile(gamePath: string, detectedPath?: string) {
 function isLocalDevServer(server: DirectoryServer) {
   const syncUrl = server.syncUrl || "";
   return server.id === "gdg-local-dev" || syncUrl.includes("127.0.0.1:8787") || syncUrl.includes("localhost:8787");
+}
+
+function serverMatchesGame(server: DirectoryServer, gameId: GameId) {
+  return (server.game || "7dtd") === gameId;
 }
 
 function normalizePath(value: string) {

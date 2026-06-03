@@ -1,8 +1,52 @@
-# GDG Sync Server Publisher
+# GDG Sync Publishing
 
-The server publisher is the first implementation of the server-side half of the loader.
+The current publisher is the first implementation of the 7DTD server-side half of the loader. R.E.P.O. does not need a live game server for sync; it can use a static hosted manifest and package files.
 
-It is not a gameplay mod pack. It is a server-side sync component that scans the 7 Days to Die server's `Mods` folder, packages the installed mods, generates a manifest, and exposes that manifest to the client helper.
+## R.E.P.O. Static Mod Pack Hosting
+
+For R.E.P.O., the sync feed can be just files on a web host:
+
+```text
+repo/
+  manifest.json
+  packages/
+    gdg-repo-core.zip
+    gdg-repo-qol.zip
+```
+
+Players do not need a dedicated R.E.P.O. gameplay server. They only need HTTP or HTTPS access to the manifest and every zip package listed in it.
+
+Good hosting options include:
+
+- the existing dedicated machine, serving static files
+- a CDN or static web host
+- Azure Blob Storage or another object storage bucket
+- GitHub release assets, if bandwidth and access patterns are acceptable
+
+The server directory entry should point at the static manifest:
+
+```json
+{
+  "id": "gdg-repo",
+  "game": "repo",
+  "name": "Golden Days | R.E.P.O. Mod Pack",
+  "syncUrl": "https://mods.goldendaysgaming.com/repo/manifest.json"
+}
+```
+
+Use [../sample-manifests/gdg.repo.sample.json](../sample-manifests/gdg.repo.sample.json) as the starting manifest shape. Each package should contain either one self-contained plugin folder or direct plugin files that the loader installs into `BepInEx/plugins/<folderName>`.
+
+The repo pack publisher can generate this folder from an installed R.E.P.O. plugin directory:
+
+```bash
+npm run repo:publish -- --source "D:\SteamLibrary\steamapps\common\REPO\BepInEx\plugins" --out "server-publish\repo" --base-url "https://mods.goldendaysgaming.com/repo"
+```
+
+Important: a clean R.E.P.O. copy must also have BepInEx/doorstop bootstrap files for plugins to load. The current package installer targets `BepInEx/plugins`; publish or install the bootstrap separately before calling this player-ready.
+
+## 7DTD Server Publisher
+
+The 7DTD publisher is not a gameplay mod pack. It is a server-side sync component that scans the 7 Days to Die server's `Mods` folder, packages the installed mods, generates a manifest, and exposes that manifest to the client helper.
 
 ## Protecting Private Server Mods
 

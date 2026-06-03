@@ -3,6 +3,7 @@ const fsp = require("node:fs/promises");
 const path = require("node:path");
 
 const GAME_ID = "7dtd";
+const SUPPORTED_GAME_IDS = new Set(["7dtd", "repo"]);
 const MANIFEST_VERSION = 1;
 const CLIENT_BLOCKED_SERVER_ONLY_MOD_NAMES = new Set([
   "allocs_commandextensions",
@@ -268,8 +269,8 @@ function validateManifest(manifest) {
     throw new Error("Manifest must be a JSON object.");
   }
 
-  if (manifest.game !== GAME_ID) {
-    throw new Error(`Manifest game must be "${GAME_ID}".`);
+  if (!SUPPORTED_GAME_IDS.has(manifest.game)) {
+    throw new Error(`Manifest game must be one of: ${[...SUPPORTED_GAME_IDS].join(", ")}.`);
   }
 
   if (!Array.isArray(manifest.mods)) {
@@ -371,6 +372,7 @@ async function exists(filePath) {
 
 module.exports = {
   GAME_ID,
+  SUPPORTED_GAME_IDS,
   MANIFEST_VERSION,
   buildSyncPlan,
   createManifest,

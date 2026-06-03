@@ -78,6 +78,7 @@ describe("shared 7DTD scanning", () => {
 
   it("rejects malformed manifests before sync planning", () => {
     expect(() => validateManifest({ game: "7dtd", mods: [] })).not.toThrow();
+    expect(() => validateManifest({ game: "repo", mods: [] })).not.toThrow();
     expect(() => validateManifest({ game: "wrong", mods: [] })).toThrow(/Manifest game/);
     expect(() => validateManifest({ game: "7dtd", mods: [{ id: "missing-name" }] })).toThrow(/id and name/);
   });

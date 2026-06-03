@@ -1,6 +1,8 @@
+export type GameId = "7dtd" | "repo";
+
 export type LoaderConfig = {
   configVersion: number;
-  gameId: "7dtd";
+  gameId: GameId;
   gamePath: string;
   manifestInput: string;
   serverDirectoryInput: string;
@@ -10,7 +12,7 @@ export type LoaderConfig = {
 
 export type DetectedGame = {
   found: boolean;
-  gameId: "7dtd";
+  gameId: GameId;
   name: string;
   path: string;
   modsPath: string;
@@ -82,7 +84,7 @@ export type ManifestMod = {
 
 export type ServerManifest = {
   manifestVersion: number;
-  game: "7dtd";
+  game: GameId;
   server: {
     id: string;
     name: string;
@@ -201,6 +203,7 @@ export type LaunchGameResult = {
 
 export type DirectoryServer = {
   id: string;
+  game?: GameId;
   name: string;
   description?: string;
   host: string;
@@ -273,30 +276,30 @@ export type BackupEntry = {
 export type GdgApi = {
   getInitialState: () => Promise<{ config: LoaderConfig; detected: DetectedGame }>;
   saveConfig: (config: Partial<LoaderConfig>) => Promise<LoaderConfig>;
-  detectGame: () => Promise<DetectedGame>;
+  detectGame: (payload?: { gameId?: GameId }) => Promise<DetectedGame>;
   selectGameFolder: () => Promise<{ canceled: true } | { canceled: false; path: string; valid: boolean }>;
   selectManifestFile: () => Promise<{ canceled: true } | { canceled: false; path: string }>;
   loadServerDirectory: (input?: string) => Promise<ServerDirectory>;
   checkServerHealth: (server: DirectoryServer) => Promise<ServerHealth>;
   getDiskSpace: (gamePath: string) => Promise<DiskSpace>;
   getGameVersion: (gamePath: string) => Promise<GameVersionInfo>;
-  cloneGameInstall: (payload: { sourcePath: string; folderName?: string; createShortcut?: boolean }) => Promise<CloneGameResult>;
+  cloneGameInstall: (payload: { gameId?: GameId; sourcePath: string; folderName?: string; createShortcut?: boolean }) => Promise<CloneGameResult>;
   onCloneProgress: (callback: (progress: SyncProgress) => void) => () => void;
   scanMods: (gamePath: string) => Promise<ScanResult>;
-  previewSync: (payload: { gamePath: string; manifestInput: string }) => Promise<SyncPreview>;
-  applySync: (payload: { gamePath: string; manifestInput: string; repair?: boolean }) => Promise<ApplyResult>;
-  cleanLocalMods: (payload: { gamePath: string; manifestInput: string; mode?: "backup" | "delete" }) => Promise<ApplyResult>;
-  purgeModsFolder: (payload: { gamePath: string; manifestInput?: string; mode?: "backup" | "delete" }) => Promise<ApplyResult>;
-  cleanManagedMods: (payload: { gamePath: string; manifestInput?: string; mode?: "backup" | "delete"; scope?: "all" | "extra" }) => Promise<ApplyResult>;
-  resetAndReinstall: (payload: { gamePath: string; manifestInput: string; mode?: "backup" | "delete" }) => Promise<ApplyResult>;
-  runDoctor: (payload: { gamePath: string; manifestInput?: string; launchWithEac?: boolean }) => Promise<DoctorResult>;
+  previewSync: (payload: { gameId?: GameId; gamePath: string; manifestInput: string }) => Promise<SyncPreview>;
+  applySync: (payload: { gameId?: GameId; gamePath: string; manifestInput: string; repair?: boolean }) => Promise<ApplyResult>;
+  cleanLocalMods: (payload: { gameId?: GameId; gamePath: string; manifestInput: string; mode?: "backup" | "delete" }) => Promise<ApplyResult>;
+  purgeModsFolder: (payload: { gameId?: GameId; gamePath: string; manifestInput?: string; mode?: "backup" | "delete" }) => Promise<ApplyResult>;
+  cleanManagedMods: (payload: { gameId?: GameId; gamePath: string; manifestInput?: string; mode?: "backup" | "delete"; scope?: "all" | "extra" }) => Promise<ApplyResult>;
+  resetAndReinstall: (payload: { gameId?: GameId; gamePath: string; manifestInput: string; mode?: "backup" | "delete" }) => Promise<ApplyResult>;
+  runDoctor: (payload: { gameId?: GameId; gamePath: string; manifestInput?: string; launchWithEac?: boolean }) => Promise<DoctorResult>;
   listBackups: (gamePath: string) => Promise<{ backups: BackupEntry[] }>;
-  restoreBackup: (payload: { gamePath: string; backupPath: string }) => Promise<ApplyResult>;
-  deleteBackup: (payload: { gamePath: string; backupPath: string }) => Promise<{ ok: boolean; canceled?: boolean; deleted?: boolean; path: string; sizeBytes?: number }>;
+  restoreBackup: (payload: { gameId?: GameId; gamePath: string; backupPath: string }) => Promise<ApplyResult>;
+  deleteBackup: (payload: { gameId?: GameId; gamePath: string; backupPath: string }) => Promise<{ ok: boolean; canceled?: boolean; deleted?: boolean; path: string; sizeBytes?: number }>;
   onSyncProgress: (callback: (progress: SyncProgress) => void) => () => void;
   onSupportBundleProgress: (callback: (progress: SyncProgress) => void) => () => void;
   onGameCopyDeleted: (callback: (payload: { config: LoaderConfig; detected: DetectedGame; deletedPath: string }) => void) => () => void;
-  launchGame: (payload: { gamePath: string; eacEnabled: boolean }) => Promise<LaunchGameResult>;
+  launchGame: (payload: { gameId?: GameId; gamePath: string; eacEnabled: boolean }) => Promise<LaunchGameResult>;
   openSteamUpdate: () => Promise<{ ok: boolean; target?: "steam" | "web"; error?: string }>;
   openDiagnosticLog: () => Promise<{ ok: boolean; error?: string; path: string }>;
   createSupportBundle: () => Promise<{ ok: boolean; error?: string; path: string; folderPath: string; fileName: string }>;

@@ -3,7 +3,17 @@
   "brand": "Golden Days Gaming",
   "servers": [
     {
+      "id": "gdg-repo",
+      "game": "repo",
+      "name": "Golden Days | R.E.P.O. Mod Pack",
+      "description": "Golden Days Gaming R.E.P.O. client mod sync",
+      "host": "",
+      "syncUrl": "https://mods.goldendaysgaming.com/repo/manifest.json",
+      "recommended": true
+    },
+    {
       "id": "gdg-test",
+      "game": "7dtd",
       "name": "GDG Test Server",
       "description": "Golden Days Gaming sync server",
       "host": "40.160.20.5",
@@ -13,6 +23,7 @@
     },
     {
       "id": "gdg-pve",
+      "game": "7dtd",
       "name": "Golden Days | US Casual PVE | Custom Mods | Cash Prizes",
       "description": "Golden Days Gaming live PVE server",
       "host": "40.160.20.5",
@@ -22,6 +33,7 @@
     },
     {
       "id": "gdg-pvp",
+      "game": "7dtd",
       "name": "Golden Days | US Hardcore PVP | Custom Mods | Cash Prizes",
       "description": "Golden Days Gaming live hardcore PVP server",
       "host": "40.160.20.5",

@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 1,
+  "game": "repo",
+  "server": {
+    "id": "golden-days-repo",
+    "name": "Golden Days R.E.P.O.",
+    "syncUrl": "https://mods.goldendaysgaming.com/repo/manifest.json"
+  },
+  "mods": [
+    {
+      "id": "gdg-repo-example",
+      "name": "GDG R.E.P.O. Example Mod",
+      "version": "0.1.0",
+      "audience": "client",
+      "required": true,
+      "folderName": "GDGRepoExample",
+      "folderSizeBytes": 0,
+      "source": {
+        "type": "zip",
+        "url": "D:\\Veridux Interactive\\GoldenDaysGaming\\GitHub\\gdg-repo-mods\\dist\\GDGRepoExample.zip",
+        "archiveSizeBytes": 0
+      }
+    }
+  ]
+}

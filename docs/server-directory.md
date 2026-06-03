@@ -17,6 +17,7 @@ Example:
   "servers": [
     {
       "id": "gdg-main",
+      "game": "7dtd",
       "name": "Golden Days Main",
       "description": "Official survival server",
       "host": "play.goldendaysgaming.com",
@@ -27,6 +28,8 @@ Example:
   ]
 }
 ```
+
+Use `game: "7dtd"` for 7 Days to Die entries and `game: "repo"` for R.E.P.O. mod packs. If `game` is omitted, the loader treats the row as `7dtd` for backward compatibility. R.E.P.O. rows can omit `host`, `gamePort`, and `queryPort` when they are only mod-pack feeds rather than live server endpoints.
 
 The launcher checks two separate statuses:
 

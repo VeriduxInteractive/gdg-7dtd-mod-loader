@@ -1,23 +1,52 @@
-# GDG 7DTD Mod Loader
+# GDG Mod Loader
 
-Golden Days Gaming desktop mod loader for syncing a player's 7 Days to Die client mods with the server they want to join.
+Golden Days Gaming desktop mod loader for syncing a player's game client mods with the server or mod pack they want to use.
 
 ## Vision
 
-The first release focuses on 7 Days to Die:
+The first release focuses on 7 Days to Die, with R.E.P.O. support now starting as a second game adapter:
 
 - Detect the local 7 Days to Die install.
+- Detect the local R.E.P.O. install.
 - Let the player choose whether to use that install, create a `7 Days To Die - GDG` copy, or skip setup.
-- Read a Golden Days server manifest.
-- Compare the manifest against the player's local `Mods` folder.
+- Let the player switch the app's game profile and create a separate `R.E.P.O. - GDG` copy.
+- Read a Golden Days manifest from a server or hosted mod-pack feed.
+- Compare the manifest against the player's local mod folder.
+- For R.E.P.O., compare and install packages under `BepInEx/plugins`.
 - Install or update missing client-side mod packages.
 - Block server-only manifest entries from client install and track GDG-managed mods locally.
 - Repair, purge, back up, restore, or permanently delete mods from the selected install.
 - Back up replaced mods before changing anything.
 
-The long-term design is server-driven. A GDG server-side sync publisher should scan the server's installed mods, generate the manifest automatically, and expose it to the client. The player-facing client should stay simple: detect GDG sync, compare files, install what is needed, and get out of the way for non-GDG servers.
+The long-term design is manifest-driven. For server games, a GDG server-side sync publisher can scan installed mods, generate the manifest automatically, and expose it to the client. For non-server packs such as R.E.P.O., the manifest can be a static hosted file that points at zip packages.
 
-The code is structured so other games can be added later as adapters instead of rewriting the loader.
+The code is structured so other games can be added as adapters instead of rewriting the loader.
+
+## Game Adapters
+
+The desktop app currently exposes two game profiles:
+
+- `7dtd`: Steam app `251570`, mod root `Mods`, package zips must contain a 7 Days to Die mod folder with `ModInfo.xml`.
+- `repo`: Steam app `3241660`, mod root `BepInEx/plugins`, package zips can contain a self-contained folder or direct plugin files that the loader installs into a managed folder.
+
+Manifests identify the target game with `game: "7dtd"` or `game: "repo"`. The built-in server directory includes separate rows per game so players can switch to R.E.P.O. and install the GDG R.E.P.O. pack once its manifest URL is published.
+
+## Hosting Mod Packs
+
+Players do not need a R.E.P.O. game server. They only need the loader to reach:
+
+- a manifest JSON URL, such as `https://mods.goldendaysgaming.com/repo/manifest.json`
+- the zip package URLs listed in that manifest
+
+Those files can live on a dedicated machine, CDN, static web host, object storage, or release hosting service. Local file paths are fine for testing, but players need HTTP or HTTPS URLs that their PCs can download.
+
+To generate the static R.E.P.O. feed from an installed plugin folder:
+
+```bash
+npm run repo:publish -- --source "D:\SteamLibrary\steamapps\common\REPO\BepInEx\plugins" --out "server-publish\repo" --base-url "https://mods.goldendaysgaming.com/repo"
+```
+
+Upload the generated `server-publish\repo` contents to the web folder served at that base URL.
 
 ## Local Development
 
@@ -34,14 +63,14 @@ npm run dev:fixture
 
 Then follow [docs/dev-testing.md](docs/dev-testing.md).
 
-## Server Publisher
+## 7DTD Server Publisher
 
 ```bash
 npm run server:publish -- --game-root "D:\7dtd-server" --base-url "https://mods.goldendaysgaming.com"
 npm run server:dev -- --game-root "D:\7dtd-server" --base-url "http://127.0.0.1:8787"
 ```
 
-The publisher scans the server `Mods` folder, creates zip packages, writes a manifest, and can serve `/gdg-sync/manifest.json` for clients.
+The current publisher is 7DTD-focused. It scans a 7DTD server `Mods` folder, creates zip packages, writes a manifest, and can serve `/gdg-sync/manifest.json` for clients.
 
 For production, publish only client-safe mods:
 
@@ -61,13 +90,13 @@ npm run build
 
 See [docs/manifest.md](docs/manifest.md) and [sample-manifests/gdg.sample.json](sample-manifests/gdg.sample.json).
 
-See [docs/client-server-sync.md](docs/client-server-sync.md) for the intended server-publisher and client-helper flow.
-See [docs/server-publisher.md](docs/server-publisher.md) for the current server-side tool.
+See [docs/client-server-sync.md](docs/client-server-sync.md) for the manifest-driven sync flow.
+See [docs/server-publisher.md](docs/server-publisher.md) for the current 7DTD publisher and static R.E.P.O. hosting notes.
 See [docs/server-directory.md](docs/server-directory.md) for the curated GDG server list format.
 
 ## Project Shape
 
-- `electron/main.cjs` owns local file access, 7DTD detection, manifest loading, mod scanning, backup, and install.
+- `electron/main.cjs` owns local file access, game detection, manifest loading, mod scanning, backup, and install.
 - `electron/preload.cjs` exposes a safe bridge to the renderer.
 - `src/App.tsx` is the desktop UI.
 - `shared/gdg-sync-core.cjs` contains shared manifest, scanning, hashing, and sync-plan rules.

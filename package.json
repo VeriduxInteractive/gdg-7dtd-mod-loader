@@ -1,8 +1,8 @@
 {
-  "name": "gdg-7dtd-mod-loader",
-  "version": "0.1.17",
+  "name": "gdg-mod-loader",
+  "version": "0.1.18",
   "private": true,
-  "description": "Golden Days Gaming desktop mod loader for syncing 7 Days to Die client mods with a server manifest.",
+  "description": "Golden Days Gaming desktop mod loader for syncing supported game client mods with a server manifest.",
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:clean": "node scripts/cleanup-test-artifacts.cjs",
-    "syntax:check": "node --check electron/main.cjs && node --check shared/gdg-sync-core.cjs && node --check server/gdg-sync-server.cjs",
+    "syntax:check": "node --check electron/main.cjs && node --check shared/gdg-sync-core.cjs && node --check server/gdg-sync-server.cjs && node --check scripts/publish-repo-pack.cjs",
     "check": "npm run test && npm run build && npm run syntax:check",
     "verify:release": "npm run test:clean && npm run check && npm run test:coverage && npm audit --audit-level=moderate && npm run test:clean",
     "package:win": "npm run build && electron-builder --win dir",
@@ -21,6 +21,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "start": "electron .",
     "dev:fixture": "node scripts/create-dev-fixture.cjs",
+    "repo:publish": "node scripts/publish-repo-pack.cjs",
     "server:publish": "node server/gdg-sync-server.cjs publish",
     "server:serve": "node server/gdg-sync-server.cjs serve",
     "server:dev": "node server/gdg-sync-server.cjs publish-and-serve"

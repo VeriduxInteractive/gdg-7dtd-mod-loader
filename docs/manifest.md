@@ -1,8 +1,8 @@
 # Server Manifest
 
-GDG Mod Loader syncs a player's local 7 Days to Die `Mods` folder against a server manifest.
+GDG Mod Loader syncs a player's selected game mod folder against a server or mod-pack manifest.
 
-The loader currently supports `zip` packages. Each archive must contain one folder with a `ModInfo.xml` file inside it. The installed folder name can be pinned with `folderName`.
+The loader currently supports `zip` packages. For `7dtd`, each archive must contain one folder with a `ModInfo.xml` file inside it. For `repo`, archives can contain one self-contained folder or direct plugin files; the loader installs them under `BepInEx/plugins/<folderName>`. The installed folder name can be pinned with `folderName`.
 
 ```json
 {
@@ -46,6 +46,7 @@ The loader currently supports `zip` packages. Each archive must contain one fold
 - Existing client mods that are not in the manifest are kept.
 - Existing manifest mods are backed up before replacement.
 - Known server-only Allocs folders are blocked on the client even if an older or malformed manifest lists them.
+- `game` must be `7dtd` or `repo`; the selected game profile and manifest game must match before install.
 - `archiveSha256` verifies the downloaded package before extraction.
 - `archiveSizeBytes` lets clients show the download size before syncing.
 - `folderSizeBytes` lets clients estimate installed disk space before syncing.
@@ -59,3 +60,12 @@ The loader currently supports `zip` packages. Each archive must contain one fold
 The first adapter targets the game's `Mods` directory. The official wiki documents the expected structure as a mod folder containing `ModInfo.xml` directly inside it. XML changes can be sent by the server, but custom assets such as icons and bundles usually need local client installation, which is the sync gap this loader is designed to close.
 
 Reference: https://7daystodie.wiki.gg/wiki/Mod_Structure
+
+## R.E.P.O. Notes
+
+The `repo` adapter targets the game's `BepInEx/plugins` directory and launches `REPO.exe`. Use `game: "repo"` in the manifest. Package zips should contain either:
+
+- one folder, which is copied into `BepInEx/plugins/<folderName>`, or
+- direct plugin files, which are copied into a managed folder named by `folderName`.
+
+If a future package needs to install the BepInEx bootstrap itself, publish it as a dedicated package and test the archive layout before making it the recommended player feed.

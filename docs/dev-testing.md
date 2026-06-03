@@ -1,5 +1,9 @@
 # Dev Testing
 
+These fixtures currently exercise the 7DTD publisher path. R.E.P.O. support can be tested with a static `repo` manifest and hosted or local zip packages.
+
+## 7DTD Fixture Flow
+
 This creates a disposable fake 7 Days to Die server and client install so you can test the sync flow without touching your real game files.
 
 ## 1. Create Fixture Folders
@@ -87,3 +91,26 @@ Expected result:
 - `GDG-UI` shows as update needed
 - clicking `Sync` replaces it
 - previous client copy is backed up
+
+## R.E.P.O. Static Pack Smoke Test
+
+For R.E.P.O., use [sample-manifests/gdg.repo.sample.json](../sample-manifests/gdg.repo.sample.json) as the starting shape:
+
+1. Run `npm run repo:publish -- --source "<path-to-REPO>\BepInEx\plugins" --out "server-publish\repo" --base-url "https://mods.goldendaysgaming.com/repo"`.
+2. For local testing, paste `server-publish\repo\manifest.json` into the app.
+3. For player testing, upload the generated `server-publish\repo` contents to the host behind the base URL.
+4. Start the app with `npm run dev`.
+5. Switch the game selector to `R.E.P.O.`.
+6. Choose a R.E.P.O. install or GDG copy.
+7. Paste the manifest path or URL and run the sync preview.
+
+Expected client result:
+
+```text
+R.E.P.O. - GDG\
+  BepInEx\
+    plugins\
+      <manifest folderName>\
+```
+
+The current loader installs plugin packages under `BepInEx/plugins`. A clean R.E.P.O. copy still needs the BepInEx/doorstop bootstrap files before those plugins will load in-game.
