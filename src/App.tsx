@@ -879,7 +879,7 @@ function App() {
     });
   }
 
-  async function previewSync(options: { promptSteam?: boolean; gamePath?: string; manifestInput?: string } = {}) {
+  async function previewSync(options: { promptSteam?: boolean; gamePath?: string; manifestInput?: string } = {}): Promise<SyncPreview | null> {
     const effectiveGamePath = options.gamePath || config.gamePath;
     const effectiveManifestInput = options.manifestInput || config.manifestInput;
     let previewResult: SyncPreview | null = null;
@@ -951,9 +951,7 @@ function App() {
       return;
     }
 
-    const nextPreview = !options.forceCheck && preview && normalizePath(preview.local.gamePath) === normalizePath(gamePath)
-      ? preview
-      : await previewSync({ gamePath, manifestInput });
+    const nextPreview = await previewSync({ gamePath, manifestInput });
 
     if (!nextPreview) {
       return;

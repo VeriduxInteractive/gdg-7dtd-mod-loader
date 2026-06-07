@@ -4037,7 +4037,13 @@ async function loadRemoteManifest(url) {
 }
 
 async function fetchJson(url) {
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    cache: "no-store",
+    headers: {
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache"
+    }
+  });
   if (!response.ok) {
     throw new Error(`Manifest request failed: ${response.status}`);
   }
@@ -4294,7 +4300,13 @@ async function downloadModArchiveOnce(mod, stagingRoot, onDownload = () => {}) {
   const archivePath = path.join(stagingRoot, fileName);
 
   if (/^https?:\/\//i.test(url)) {
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers: {
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache"
+      }
+    });
     if (!response.ok) {
       throw new Error(`Download failed: ${response.status}`);
     }
