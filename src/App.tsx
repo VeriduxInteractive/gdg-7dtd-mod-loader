@@ -506,6 +506,18 @@ function App() {
     return saved;
   }
 
+  async function syncLaunchModeWithServer(nextPreview: SyncPreview | null | undefined, currentLaunchWithEac = config.launchWithEac) {
+    const nextServerEacEnabled = selectedGame.supportsEac && typeof nextPreview?.manifest.server.eacEnabled === "boolean"
+      ? nextPreview.manifest.server.eacEnabled
+      : null;
+    if (typeof nextServerEacEnabled !== "boolean" || nextServerEacEnabled === Boolean(currentLaunchWithEac)) {
+      return false;
+    }
+
+    await updateConfig({ launchWithEac: nextServerEacEnabled });
+    return true;
+  }
+
   function updateCleanupPreference(preference: CleanupPreference) {
     setCleanupPreference(preference);
     writeCleanupPreference(preference);
@@ -1045,6 +1057,11 @@ function App() {
       setActiveTab("sync");
       if (!result.ok) {
         setError(`${result.failedCount || 1} mod install${result.failedCount === 1 ? "" : "s"} failed. Check the sync log below.`);
+      } else {
+        const nextPreview = result.preview || activePreview;
+        if (await syncLaunchModeWithServer(nextPreview)) {
+          return `Mods synced. EAC set ${nextPreview?.manifest.server.eacEnabled ? "on" : "off"}. Ready to launch.`;
+        }
       }
     });
   }
@@ -1081,6 +1098,11 @@ function App() {
       setActiveTab("sync");
       if (!result.ok) {
         setError(`${result.failedCount || 1} mod repair${result.failedCount === 1 ? "" : "s"} failed. Check the sync log below.`);
+      } else {
+        const nextPreview = result.preview || preview;
+        if (await syncLaunchModeWithServer(nextPreview)) {
+          return `Mods repaired. EAC set ${nextPreview?.manifest.server.eacEnabled ? "on" : "off"}. Ready to launch.`;
+        }
       }
     });
   }
@@ -1344,10 +1366,16 @@ function App() {
     setMessage("Launching game");
 
     try {
+      const launchWithEac = selectedGame.supportsEac && typeof serverEacEnabled === "boolean"
+        ? serverEacEnabled
+        : Boolean(config.launchWithEac);
+      if (launchWithEac !== Boolean(config.launchWithEac)) {
+        await updateConfig({ launchWithEac });
+      }
       const result = await window.gdg.launchGame({
         gameId: config.gameId,
         gamePath: config.gamePath,
-        eacEnabled: Boolean(config.launchWithEac)
+        eacEnabled: launchWithEac
       });
       setMessage(selectedGame.supportsEac ? (result.eacEnabled ? "Launched with EAC" : "Launched with EAC off") : `${selectedGame.name} launched`);
     } catch (launchError) {

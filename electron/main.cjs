@@ -1823,12 +1823,16 @@ async function findGameExecutable(gamePath, options = {}) {
   const eacEnabled = Boolean(options.eacEnabled);
   const eacCandidates = profile.eacExecutables.map((name) => path.join(gamePath, name));
   const directCandidates = profile.directExecutables.map((name) => path.join(gamePath, name));
-  const candidates = eacEnabled ? [...eacCandidates, ...directCandidates] : [...directCandidates, ...eacCandidates];
+  const candidates = eacEnabled ? [...eacCandidates, ...directCandidates] : directCandidates;
 
   for (const candidate of candidates) {
     if (await exists(candidate)) {
       return candidate;
     }
+  }
+
+  if (profile.supportsEac && !eacEnabled) {
+    throw new Error(`No non-EAC ${profile.name} executable was found. Verify this GDG copy in Steam or recreate it before launching with EAC off.`);
   }
 
   throw new Error(`No ${profile.name} executable was found.`);
@@ -3500,6 +3504,21 @@ async function getPathSize(inputPath) {
     total += await getPathSize(path.join(inputPath, entry.name));
   }
   return total;
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  const display = unitIndex === 0 || size >= 10 ? Math.round(size) : size.toFixed(1);
+  return `${display} ${units[unitIndex]}`;
 }
 
 async function loadManifest(input) {
