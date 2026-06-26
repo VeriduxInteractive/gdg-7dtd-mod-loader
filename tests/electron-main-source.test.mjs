@@ -16,4 +16,13 @@ describe("Electron main source", () => {
     expect(source).toMatch(/const candidates = eacEnabled \? \[\.\.\.eacCandidates, \.\.\.directCandidates\] : directCandidates;/);
     expect(source).toMatch(/No non-EAC \$\{profile\.name\} executable was found/);
   });
+
+  it("excludes R.E.P.O. staging artifacts when creating a GDG copy", async () => {
+    const source = await readFile(new URL("../electron/main.cjs", import.meta.url), "utf8");
+
+    expect(source).toContain("excludedCopyPatterns");
+    expect(source).toContain("repo-publish-*.tgz");
+    expect(source).toContain("publish-repo-*.sh");
+    expect(source).toContain("temp_*");
+  });
 });

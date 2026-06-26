@@ -63,6 +63,16 @@ const GAME_PROFILES = {
     steamCommonNames: ["REPO", "R.E.P.O."],
     extraCandidateRoots: () => [],
     excludedCopyPaths: ["BepInEx", "doorstop_config.ini", "winhttp.dll", ".doorstop_version", ".gdg-mod-loader"],
+    excludedCopyPatterns: [
+      ".agents",
+      ".claude",
+      ".git",
+      "bepinex.zip",
+      "publish-repo-*.sh",
+      "repo-publish-*.tgz",
+      "temp_*",
+      "tmp_*"
+    ],
     bootstrapRequiredPaths: ["winhttp.dll", "doorstop_config.ini", "BepInEx/core/BepInEx.dll"],
     bootstrapInstallPaths: ["winhttp.dll", "doorstop_config.ini", ".doorstop_version", "BepInEx/core", "BepInEx/config/BepInEx.cfg"],
     supportLogName: "R.E.P.O.",
@@ -1786,10 +1796,35 @@ async function buildCopyPlan(sourceRoot, targetRoot, gameId = DEFAULT_GAME_ID) {
 
 function isExcludedGameCopyPath(relativePath, profile = getGameProfile(DEFAULT_GAME_ID)) {
   const normalized = String(relativePath || "").replace(/\\/g, "/").toLowerCase();
-  return profile.excludedCopyPaths.some((excludedPath) => {
+  const excludedByPath = profile.excludedCopyPaths.some((excludedPath) => {
     const excluded = String(excludedPath || "").replace(/\\/g, "/").toLowerCase();
     return normalized === excluded || normalized.startsWith(`${excluded}/`);
   });
+  if (excludedByPath) {
+    return true;
+  }
+
+  return (profile.excludedCopyPatterns || []).some((pattern) => matchesCopyExcludePattern(normalized, pattern));
+}
+
+function matchesCopyExcludePattern(normalizedRelativePath, pattern) {
+  const normalizedPattern = String(pattern || "").replace(/\\/g, "/").toLowerCase();
+  if (!normalizedPattern) {
+    return false;
+  }
+
+  const firstSegment = normalizedRelativePath.split("/")[0] || normalizedRelativePath;
+  const candidate = normalizedPattern.includes("/") ? normalizedRelativePath : firstSegment;
+  if (!normalizedPattern.includes("*")) {
+    return candidate === normalizedPattern || normalizedRelativePath.startsWith(`${normalizedPattern}/`);
+  }
+
+  const expression = new RegExp(`^${escapeRegex(normalizedPattern).replace(/\\\*/g, ".*")}$`);
+  return expression.test(candidate);
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[|\\{}()[\]^$+*?.]/g, "\\$&");
 }
 
 async function copyFileWithProgress(sourcePath, targetPath, onChunk) {
