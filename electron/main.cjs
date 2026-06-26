@@ -63,6 +63,8 @@ const GAME_PROFILES = {
     steamCommonNames: ["REPO", "R.E.P.O."],
     extraCandidateRoots: () => [],
     excludedCopyPaths: ["BepInEx", "doorstop_config.ini", "winhttp.dll", ".doorstop_version", ".gdg-mod-loader"],
+    bootstrapRequiredPaths: ["winhttp.dll", "doorstop_config.ini", "BepInEx/core/BepInEx.dll"],
+    bootstrapInstallPaths: ["winhttp.dll", "doorstop_config.ini", ".doorstop_version", "BepInEx/core", "BepInEx/config/BepInEx.cfg"],
     supportLogName: "R.E.P.O.",
     logCandidateRoots: () => [
       path.join(os.homedir(), "AppData", "LocalLow", "semiwork", "REPO"),
@@ -2059,6 +2061,7 @@ async function previewSync(payload) {
   const gameCompatibility = compareGameCompatibility(manifest, await getGameVersionInfo(gamePath, gameId), gameId);
   const local = await scanMods(gamePath, { hash: true, gameId });
   const plan = buildSyncPlan(manifest, local.mods);
+  const bootstrap = await getGameBootstrapStatus(gamePath, manifest, gameId);
   const sizeSummary = getManifestSizeSummary(manifest);
   const installState = await readInstallState(gamePath);
   const clientManifestFolders = new Set(
@@ -2074,6 +2077,7 @@ async function previewSync(payload) {
   return {
     manifest,
     local,
+    bootstrap,
     gameCompatibility,
     plan,
     summary: summarizePlan(plan),
@@ -2119,6 +2123,10 @@ async function applySync(payload, onProgress = () => {}) {
   await fsp.mkdir(modsPath, { recursive: true });
   await fsp.mkdir(stagingRoot, { recursive: true });
   log.push(`Using sync workspace: ${workRoot}`);
+  const bootstrapResult = await ensureGameBootstrap(payload.gamePath, preview.manifest, stagingRoot, backupRoot, onProgress);
+  if (bootstrapResult.required) {
+    log.push(bootstrapResult.installed ? "Installed R.E.P.O. BepInEx bootstrap." : "R.E.P.O. BepInEx bootstrap already present.");
+  }
 
   const actionable = getActionableSyncItems(preview, { repairMode });
   const total = actionable.length;
@@ -4004,6 +4012,136 @@ function getSyncActionVerb(item, repairMode) {
   }
 
   return item.action === "install" ? "Installed" : "Updated";
+}
+
+async function getGameBootstrapStatus(gamePath, manifest, gameId = DEFAULT_GAME_ID) {
+  const profile = getGameProfile(gameId);
+  const requiredPaths = profile.bootstrapRequiredPaths || [];
+  if (requiredPaths.length === 0) {
+    return {
+      required: false,
+      ok: true,
+      missing: [],
+      available: false
+    };
+  }
+
+  const missing = [];
+  for (const requiredPath of requiredPaths) {
+    if (!(await exists(path.join(gamePath, requiredPath)))) {
+      missing.push(requiredPath);
+    }
+  }
+
+  return {
+    required: true,
+    ok: missing.length === 0,
+    missing,
+    available: Boolean(manifest?.bootstrap?.source?.url)
+  };
+}
+
+async function ensureGameBootstrap(gamePath, manifest, stagingRoot, backupRoot, onProgress = () => {}) {
+  const gameId = defaultManifestGameId(manifest);
+  const profile = getGameProfile(gameId);
+  let status = await getGameBootstrapStatus(gamePath, manifest, gameId);
+  if (!status.required || status.ok) {
+    return { ...status, installed: false };
+  }
+
+  if (!manifest?.bootstrap?.source?.url) {
+    throw new Error(`${profile.name} is missing BepInEx bootstrap files (${status.missing.join(", ")}), and this server manifest does not include a bootstrap package.`);
+  }
+
+  const bootstrapMod = {
+    id: manifest.bootstrap.id || `${gameId}-bepinex-bootstrap`,
+    name: manifest.bootstrap.name || `${profile.shortName} BepInEx Bootstrap`,
+    source: manifest.bootstrap.source
+  };
+
+  reportSyncProgress(onProgress, {
+    phase: "downloading",
+    message: `Downloading ${bootstrapMod.name}.`,
+    modName: bootstrapMod.name,
+    modKey: "bootstrap",
+    current: 0,
+    total: 1
+  });
+  const archivePath = await downloadModArchive(bootstrapMod, stagingRoot, (download) => {
+    reportSyncProgress(onProgress, {
+      phase: "downloading",
+      message: `Downloading ${bootstrapMod.name}.`,
+      modName: bootstrapMod.name,
+      modKey: "bootstrap",
+      current: 0,
+      total: 1,
+      bytesReceived: download.bytesReceived,
+      bytesTotal: download.bytesTotal
+    });
+  });
+
+  reportSyncProgress(onProgress, {
+    phase: "extracting",
+    message: `Unpacking ${bootstrapMod.name}.`,
+    modName: bootstrapMod.name,
+    modKey: "bootstrap",
+    current: 1,
+    total: 1
+  });
+
+  const extractRoot = path.join(stagingRoot, sanitizeFolderName(`${bootstrapMod.id}-extract`));
+  await fsp.rm(extractRoot, { recursive: true, force: true });
+  await fsp.mkdir(extractRoot, { recursive: true });
+  await extractZipToDirectory(archivePath, extractRoot);
+  const sourceRoot = await findGenericPackageRoot(extractRoot);
+  if (!sourceRoot) {
+    throw new Error(`${bootstrapMod.name} did not contain installable files.`);
+  }
+
+  reportSyncProgress(onProgress, {
+    phase: "installing",
+    message: `Installing ${bootstrapMod.name}.`,
+    modName: bootstrapMod.name,
+    modKey: "bootstrap",
+    current: 1,
+    total: 1
+  });
+
+  const installPaths = manifest.bootstrap.paths || profile.bootstrapInstallPaths || [];
+  for (const relativePath of installPaths) {
+    await installBootstrapPath(sourceRoot, gamePath, backupRoot, relativePath);
+  }
+
+  status = await getGameBootstrapStatus(gamePath, manifest, gameId);
+  if (!status.ok) {
+    throw new Error(`${profile.name} bootstrap install finished but required files are still missing: ${status.missing.join(", ")}.`);
+  }
+
+  return { ...status, installed: true };
+}
+
+async function installBootstrapPath(sourceRoot, gamePath, backupRoot, relativePath) {
+  const normalized = String(relativePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!normalized || normalized.includes("..")) {
+    throw new Error(`Bootstrap package requested an unsafe install path: ${relativePath}`);
+  }
+
+  const sourcePath = path.join(sourceRoot, normalized);
+  if (!(await exists(sourcePath))) {
+    return;
+  }
+
+  const targetPath = path.join(gamePath, normalized);
+  if (await exists(targetPath)) {
+    const backupPath = path.join(backupRoot, "bootstrap", normalized);
+    await fsp.mkdir(path.dirname(backupPath), { recursive: true });
+    await fsp.rm(backupPath, { recursive: true, force: true });
+    await fsp.cp(targetPath, backupPath, { recursive: true });
+  }
+
+  await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+  await fsp.rm(targetPath, { recursive: true, force: true });
+  await fsp.cp(sourcePath, targetPath, { recursive: true });
 }
 
 async function loadRemoteManifest(url) {

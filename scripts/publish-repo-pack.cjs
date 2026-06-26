@@ -18,6 +18,7 @@ main().catch((error) => {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const source = path.resolve(args.source || args.plugins || args._[0] || "");
+  const gameRoot = path.resolve(args.gameRoot || args["game-root"] || path.join(source, "..", ".."));
   const outDir = path.resolve(args.out || "server-publish/repo");
   const packagesDir = path.join(outDir, "packages");
   const baseUrl = normalizeBaseUrl(args.baseUrl || args["base-url"] || "https://mods.goldendaysgaming.com/repo");
@@ -85,6 +86,7 @@ async function main() {
       syncUrl: `${baseUrl}/manifest.json`
     },
     generatedAt: new Date().toISOString(),
+    bootstrap: await publishBootstrapPackage(gameRoot, packagesDir, baseUrl),
     mods
   };
 
@@ -101,6 +103,74 @@ async function main() {
   console.log(`Manifest: ${path.join(outDir, "manifest.json")}`);
   console.log(`Packages: ${packagesDir}`);
   console.log(`Upload the contents of ${outDir} to ${baseUrl}`);
+}
+
+async function publishBootstrapPackage(gameRoot, packagesDir, baseUrl) {
+  const zipRoot = "repo-bepinex-bootstrap";
+  const archiveName = "repo-bepinex-bootstrap.zip";
+  const archivePath = path.join(packagesDir, archiveName);
+  const paths = [
+    "winhttp.dll",
+    "doorstop_config.ini",
+    ".doorstop_version",
+    "BepInEx/core",
+    "BepInEx/config/BepInEx.cfg"
+  ];
+  const requiredPaths = [
+    "winhttp.dll",
+    "doorstop_config.ini",
+    "BepInEx/core/BepInEx.dll"
+  ];
+
+  for (const requiredPath of requiredPaths) {
+    const fullPath = path.join(gameRoot, requiredPath);
+    const stats = await fsp.stat(fullPath).catch(() => null);
+    if (!stats) {
+      throw new Error(`Missing required R.E.P.O. BepInEx bootstrap path: ${fullPath}`);
+    }
+  }
+
+  const zip = new AdmZip();
+  for (const relativePath of paths) {
+    const sourcePath = path.join(gameRoot, relativePath);
+    const stats = await fsp.stat(sourcePath).catch(() => null);
+    if (!stats) {
+      continue;
+    }
+
+    const zipPath = `${zipRoot}/${relativePath}`.replace(/\\/g, "/");
+    if (stats.isDirectory()) {
+      await addDirectoryToZip(zip, sourcePath, zipPath);
+    } else if (stats.isFile()) {
+      zip.addLocalFile(sourcePath, path.dirname(zipPath));
+    }
+  }
+
+  await new Promise((resolve, reject) => {
+    zip.writeZip(archivePath, (error) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    });
+  });
+
+  const archiveStats = await fsp.stat(archivePath);
+  return {
+    id: "repo-bepinex-bootstrap",
+    name: "R.E.P.O. BepInEx Bootstrap",
+    version: "5.4.21",
+    required: true,
+    paths,
+    requiredPaths,
+    source: {
+      type: "zip",
+      url: `${baseUrl}/packages/${encodeURIComponent(archiveName)}`,
+      archiveSizeBytes: archiveStats.size,
+      archiveSha256: await hashFile(archivePath)
+    }
+  };
 }
 
 function parseArgs(argv) {
