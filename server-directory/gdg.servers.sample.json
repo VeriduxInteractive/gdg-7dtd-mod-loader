@@ -34,8 +34,8 @@
     {
       "id": "gdg-pvp",
       "game": "7dtd",
-      "name": "Golden Days | US Hardcore PVP | Custom Mods | Cash Prizes",
-      "description": "Golden Days Gaming live hardcore PVP server",
+      "name": "Golden Days | US Vanilla 3.0 | No Mods",
+      "description": "Golden Days Gaming live vanilla 3.0 server",
       "host": "40.160.20.5",
       "gamePort": 26920,
       "queryPort": 26921,
