@@ -767,6 +767,35 @@ function App() {
       return;
     }
 
+    let selectedServerHealth = selectedServer ? serverHealth[selectedServer.id] : null;
+    if (selectedServer && !selectedServerHealth?.steamBuildId) {
+      selectedServerHealth = await window.gdg.checkServerHealth(selectedServer);
+      setServerHealth((current) => ({
+        ...current,
+        [selectedServer.id]: selectedServerHealth as ServerHealth
+      }));
+    }
+    const requiredBuildId = String(selectedServerHealth?.steamBuildId || "").trim();
+    if (requiredBuildId) {
+      const sourceVersion = await window.gdg.getGameVersion(detected.path);
+      const sourceBuildId = String(sourceVersion.steamBuildId || "").trim();
+      if (sourceBuildId && sourceBuildId !== requiredBuildId) {
+        const sourceLabel = formatGameBuildLabel(sourceBuildId, "", selectedServerHealth?.gameVersionMap);
+        const requiredLabel = formatGameBuildLabel(requiredBuildId, selectedServerHealth?.gameVersion, selectedServerHealth?.gameVersionMap);
+        setGameVersion(sourceVersion);
+        setOpenStep("check");
+        setMessage("Game version mismatch");
+        setError(`${selectedServer?.name || "This GDG server"} requires ${requiredLabel}, but Steam has ${sourceLabel}. Open Steam and switch ${selectedGame.name} to the server version before creating the GDG copy.`);
+        window.setTimeout(() => {
+          const shouldOpenSteam = window.confirm(`${selectedServer?.name || "This GDG server"} requires ${requiredLabel}, but Steam has ${sourceLabel}.\n\nOpen Steam now so you can switch to the server version before GDG makes a copy?`);
+          if (shouldOpenSteam) {
+            void openSteamUpdate();
+          }
+        }, 50);
+        return;
+      }
+    }
+
     setSyncProgress({
       phase: "preparing",
       message: `Preparing ${selectedGame.shortName} GDG copy.`,
@@ -914,13 +943,13 @@ function App() {
       if (result.gameCompatibility.checked && !result.gameCompatibility.ok) {
         const promptKey = `${effectiveGamePath}|${effectiveManifestInput}|${result.gameCompatibility.reason}`;
         setOpenStep("check");
-        setError(`${result.gameCompatibility.reason} Update ${selectedGame.name} in Steam before installing GDG mods.`);
-        setMessage("Game update needed");
+        setError(`${result.gameCompatibility.reason} Match ${selectedGame.name} to the server version in Steam before installing GDG mods.`);
+        setMessage("Game version mismatch");
 
         if (options.promptSteam !== false && lastVersionPromptKey.current !== promptKey) {
           lastVersionPromptKey.current = promptKey;
           window.setTimeout(() => {
-            const shouldOpenSteam = window.confirm(`${result.gameCompatibility.reason}\n\nOpen ${selectedGame.name} in Steam now so you can update it?`);
+            const shouldOpenSteam = window.confirm(`${result.gameCompatibility.reason}\n\nOpen ${selectedGame.name} in Steam now so you can switch to the server version?`);
             if (shouldOpenSteam) {
               void openSteamUpdate();
             }
@@ -1354,7 +1383,7 @@ function App() {
 
   async function launchGame() {
     if (gameVersionMismatch) {
-      setError(`Update ${selectedGame.name} in Steam before launching this GDG modpack.`);
+      setError(`Match ${selectedGame.name} to the server version in Steam before launching this GDG modpack.`);
       setOpenStep("check");
       return;
     }
@@ -1542,7 +1571,7 @@ function App() {
   const launchHint = !scanMatchesGame
     ? "Checking installed mods for DLL files."
     : gameVersionMismatch
-      ? `Update ${selectedGame.name} in Steam before launching.`
+      ? `Match ${selectedGame.name} to the server version in Steam before launching.`
     : eacMismatch
       ? `Server EAC is ${serverEacEnabled ? "on" : "off"}. Match this before launching.`
     : selectedGame.supportsEac && hasDllMods
@@ -1660,12 +1689,12 @@ function App() {
         : gameVersionMismatch
           ? {
               tone: "warn",
-              title: `Next up: update ${selectedGame.name}`,
-              detail: "Steam needs to match the selected GDG server version before install.",
+              title: "Next up: match game version",
+              detail: "Steam must install the same game version this GDG server is running.",
               label: "Open Steam",
               icon: <RefreshCw size={18} />,
               onClick: openSteamUpdate,
-              previewText: `Steam will open so you can update ${selectedGame.name} to the server version.`,
+              previewText: `Steam will open so you can choose the ${selectedGame.name} branch/version required by this server.`,
               disabled: working
             }
           : syncSpaceBlocked
@@ -1822,7 +1851,7 @@ function App() {
     problemCards.push({
       key: "game-version",
       tone: "warn",
-      title: "Steam update needed",
+      title: "Game version mismatch",
       detail: gameCompatibility?.reason || "Your game version does not match this server.",
       label: "Open Steam",
       icon: <RefreshCw size={18} />,
@@ -2309,7 +2338,7 @@ function App() {
                       <div className={`version-guard ${gameVersionMismatch ? "warn" : "ok"}`}>
                         {gameVersionMismatch ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}
                         <span>
-                          <strong>{gameVersionMismatch ? "Game update needed" : "Game version check"}</strong>
+                          <strong>{gameVersionMismatch ? "Game version mismatch" : "Game version check"}</strong>
                           <small>
                             {gameVersionMismatch
                               ? gameCompatibility?.reason
@@ -2335,11 +2364,11 @@ function App() {
                         )}
                         {gameVersionMismatch && (
                           <div className="steam-update-help">
-                            <strong>Steam controls game updates.</strong>
+                            <strong>Steam controls the base game version.</strong>
                             <ol>
                               <li>Open Steam and select {selectedGame.name}.</li>
                               <li>Go to Properties, then Betas.</li>
-                              <li>Choose the public/current branch or the server version shown above.</li>
+                              <li>Choose the branch/version shown above for this server.</li>
                               <li>Wait for Steam to finish updating, then come back and click Check Server Mods.</li>
                             </ol>
                           </div>
@@ -2412,7 +2441,7 @@ function App() {
                   summary={
                     preview
                       ? gameVersionMismatch
-                        ? "Update game before applying mod changes"
+                        ? "Match game version before applying mod changes"
                         : modsToInstall > 0
                         ? modChangeCopy.stepSummary
                         : localOnlyMods > 0
@@ -2468,7 +2497,7 @@ function App() {
                       <div className="local-only-warning danger">
                         <AlertTriangle size={18} />
                         <span>
-                          <strong>Update {selectedGame.name} before installing</strong>
+                          <strong>Match {selectedGame.name} to the server version before installing</strong>
                           <small>{gameCompatibility?.reason || "The selected game folder does not match the selected server version."}</small>
                         </span>
                       </div>
@@ -3271,6 +3300,18 @@ function getGameVersionForBuild(buildId: string, versionMap: Record<string, stri
   }
 
   return String(versionMap[key] || "").trim();
+}
+
+function formatGameBuildLabel(buildId: string, version = "", versionMap: Record<string, string> = {}) {
+  const normalizedBuild = String(buildId || "").trim();
+  const label = String(version || getGameVersionForBuild(normalizedBuild, versionMap) || "").trim();
+  if (label && normalizedBuild) {
+    return `${label} / Steam build ${normalizedBuild}`;
+  }
+  if (label) {
+    return label;
+  }
+  return normalizedBuild ? `Steam build ${normalizedBuild}` : "an unknown Steam build";
 }
 
 function isRecommendedServer(server: DirectoryServer) {

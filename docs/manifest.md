@@ -53,7 +53,7 @@ The loader currently supports `zip` packages. For `7dtd`, each archive must cont
 - `folderSha256` verifies the installed mod folder during preview.
 - `server.eacEnabled` tells clients whether the 7 Days to Die server expects Easy Anti-Cheat on or off. When published by `gdg-sync-server`, this is read from `serverconfig.xml` property `EACEnabled` when available.
 - `server.gameVersion` is the friendly game version players see when the server requires a specific 7 Days to Die version.
-- `server.steamBuildId` lets the loader compare the player's local Steam build from `appmanifest_251570.acf` before installing or launching. If it differs, the loader blocks install/launch and opens Steam's validate/update flow for the player.
+- `server.steamBuildId` lets the loader compare the player's local Steam build from `appmanifest_251570.acf` before installing or launching. If it differs, the loader blocks install/launch and opens Steam so the player can switch to the server's required branch/version.
 
 ## 7 Days to Die Notes
 

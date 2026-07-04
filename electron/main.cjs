@@ -2134,7 +2134,7 @@ async function applySync(payload, onProgress = () => {}) {
   const profile = getGameProfile(gameId);
   const repairMode = Boolean(payload?.repair);
   if (preview.gameCompatibility.checked && !preview.gameCompatibility.ok) {
-    throw new Error(`${preview.gameCompatibility.reason} Update ${profile.name} in Steam before installing GDG mods.`);
+    throw new Error(`${preview.gameCompatibility.reason} Match ${profile.name} to the server version in Steam before installing GDG mods.`);
   }
 
   const spaceRequirement = getSyncSpaceRequirement(preview, { repairMode });
@@ -3206,7 +3206,7 @@ async function runPreflightDoctor(payload = {}) {
           "Game version",
           preview.gameCompatibility.ok ? "pass" : "fail",
           preview.gameCompatibility.reason,
-          preview.gameCompatibility.ok ? "" : `Update ${profile.name} in Steam, then retry the check.`
+          preview.gameCompatibility.ok ? "" : `Match ${profile.name} to the server version in Steam, then retry the check.`
         );
       } else {
         addCheck("game-version", "Game version", "warn", preview.gameCompatibility.reason, "Publish a Steam build id for stricter checks.");
