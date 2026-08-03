@@ -9,10 +9,15 @@ const {
   getModAudience,
   isClientBlockedServerOnlyMod,
   isClientInstallableManifestMod,
-  summarizePlan
+  summarizePlan,
+  validateManifest
 } = require("../shared/gdg-sync-core.cjs");
 
 describe("shared sync policy", () => {
+  it("accepts Minecraft manifests for launcher-managed packs", () => {
+    expect(() => validateManifest({ game: "minecraft", mods: [] })).not.toThrow();
+  });
+
   it("normalizes manifest audience metadata", () => {
     expect(getModAudience({ id: "gdg-ui" })).toBe("client");
     expect(getModAudience({ id: "shared-mod", audience: "shared" })).toBe("shared");

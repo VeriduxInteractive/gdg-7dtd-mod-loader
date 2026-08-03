@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("gdg", {
   getInitialState: () => ipcRenderer.invoke("gdg:get-initial-state"),
   saveConfig: (config) => ipcRenderer.invoke("gdg:save-config", config),
   detectGame: (payload) => ipcRenderer.invoke("gdg:detect-game", payload || {}),
+  provisionMinecraft: (payload) => ipcRenderer.invoke("gdg:provision-minecraft", payload || {}),
   selectGameFolder: () => ipcRenderer.invoke("gdg:select-game-folder"),
   selectManifestFile: () => ipcRenderer.invoke("gdg:select-manifest-file"),
   loadServerDirectory: (input) => ipcRenderer.invoke("gdg:load-server-directory", { input }),

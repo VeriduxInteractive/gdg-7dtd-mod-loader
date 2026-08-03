@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 1,
+  "game": "minecraft",
+  "server": {
+    "id": "gdg-minecraft-superior",
+    "name": "Golden Days | Superior RPG 1.8.3",
+    "host": "goldendays.mcsh.io",
+    "port": 25565,
+    "quickJoinVersion": "0.1.0",
+    "gameVersion": "Superior 1.8.3 · Minecraft 1.20.1 · Forge 47.4.20",
+    "steamBuildId": "8348938",
+    "gameVersionMap": {
+      "8348938": "Superior 1.8.3 · Minecraft 1.20.1 · Forge 47.4.20"
+    },
+    "prismPack": {
+      "projectId": "1293866",
+      "versionId": "8348938",
+      "versionName": "Superior 1.8.3",
+      "minecraftVersion": "1.20.1",
+      "forgeVersion": "47.4.20"
+    }
+  },
+  "generatedAt": "2026-08-03T08:10:32.805Z",
+  "mods": []
+}

@@ -3,6 +3,18 @@
   "brand": "Golden Days Gaming",
   "servers": [
     {
+      "id": "gdg-minecraft-superior",
+      "game": "minecraft",
+      "name": "Golden Days | Superior RPG 1.8.3",
+      "description": "Public Minecraft Java server using the CurseForge-managed Superior RPG 1.8.3 pack",
+      "host": "goldendays.mcsh.io",
+      "gamePort": 25565,
+      "syncUrl": "bundled://minecraft-superior-1.8.3.json",
+      "modManager": "curseforge",
+      "packUrl": "https://www.curseforge.com/minecraft/modpacks/superior-the-greatest-rpg-modpack-ever-made/files/8348938",
+      "recommended": true
+    },
+    {
       "id": "gdg-repo",
       "game": "repo",
       "name": "Golden Days | R.E.P.O. Mod Pack",

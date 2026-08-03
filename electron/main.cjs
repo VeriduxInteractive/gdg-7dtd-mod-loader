@@ -6,11 +6,13 @@ const crypto = require("node:crypto");
 const dgram = require("node:dgram");
 const net = require("node:net");
 const os = require("node:os");
-const { spawn } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
+const { promisify } = require("node:util");
 const { pipeline } = require("node:stream/promises");
 const { once } = require("node:events");
 const AdmZip = require("adm-zip");
 const yauzl = require("yauzl");
+const execFileAsync = promisify(execFile);
 const {
   getClientBlockedReason,
   getModAudience,
@@ -79,6 +81,61 @@ const GAME_PROFILES = {
     logCandidateRoots: () => [
       path.join(os.homedir(), "AppData", "LocalLow", "semiwork", "REPO"),
       path.join(os.homedir(), "AppData", "LocalLow", "semiwork", "R.E.P.O.")
+    ]
+  },
+  minecraft: {
+    id: "minecraft",
+    name: "Minecraft Java",
+    shortName: "Minecraft",
+    platform: "prism",
+    steamAppId: "",
+    steamStoreSlug: "",
+    envInstall: "GDG_MINECRAFT_INSTANCE",
+    defaultServerId: "gdg-minecraft-superior",
+    copyFolderName: "",
+    modsPathSegments: ["minecraft", "mods"],
+    modArchive: "generic-folder",
+    managesModsExternally: true,
+    supportsEac: false,
+    supportsCopy: false,
+    directExecutables: [],
+    eacExecutables: [],
+    rootSignals: ["instance.cfg", "mmc-pack.json", "minecraft"],
+    rootSignalMode: "all",
+    steamCommonNames: [],
+    extraCandidateRoots: () => [
+      path.join(os.homedir(), "AppData", "Roaming", "PrismLauncher", "instances", "SUPERIOR - RPG"),
+      path.join(os.homedir(), "curseforge", "minecraft", "Instances", "SUPERIOR - RPG")
+    ],
+    excludedCopyPaths: [],
+    supportLogName: "Minecraft Java",
+    launchServer: "goldendays.mcsh.io",
+    prismPackProjectId: "1293866",
+    prismPackVersionId: "8348938",
+    prismPackVersionName: "Superior 1.8.3",
+    bootstrapManifestPath: path.join(__dirname, "..", "server-directory", "minecraft-bootstrap.json"),
+    bundledAddons: [
+      {
+        sourcePath: path.join(__dirname, "..", "server-directory", "addons", "GDG-Quick-Join.jar"),
+        targetName: "GDG-Quick-Join.jar",
+        ownedPrefix: "gdg-quick-join"
+      }
+    ],
+    launcherCandidates: () => [
+      path.join(getManagedMinecraftRoot(), "runtime", "11.0.3", "prismlauncher.exe"),
+      path.join(os.homedir(), "AppData", "Local", "Programs", "PrismLauncher", "prismlauncher.exe"),
+      path.join(os.homedir(), "scoop", "apps", "prismlauncher", "current", "prismlauncher.exe"),
+      "C:\\Program Files\\PrismLauncher\\prismlauncher.exe"
+    ],
+    curseForgeLauncherCandidates: () => [
+      path.join(os.homedir(), "AppData", "Local", "Programs", "CurseForge Windows", "CurseForge.exe")
+    ],
+    curseForgeGameId: 432,
+    logCandidateRoots: () => [
+      path.join(os.homedir(), "AppData", "Roaming", "PrismLauncher", "logs"),
+      path.join(getManagedPrismDataRoot(), "logs"),
+      path.join(os.homedir(), "AppData", "Roaming", "CurseForge", "logs"),
+      path.join(os.homedir(), "AppData", "Roaming", "CurseForge", "agent", "logs", "CurseClient")
     ]
   }
 };
@@ -181,6 +238,12 @@ function registerIpc() {
   ipcMain.handle("gdg:detect-game", async (_event, payload = {}) => {
     const gameId = payload?.gameId || (await loadConfig()).gameId;
     return detectGameInstall(gameId);
+  });
+
+  ipcMain.handle("gdg:provision-minecraft", async (event, payload = {}) => {
+    return provisionMinecraftInstance(payload, (progress) => {
+      sendIpcProgress(event, "gdg:sync-progress", progress);
+    });
   });
 
   ipcMain.handle("gdg:select-game-folder", async () => {
@@ -310,6 +373,35 @@ function registerIpc() {
 
   ipcMain.handle("gdg:open-steam-update", async () => {
     const profile = getGameProfile((await loadConfig()).gameId);
+    if (profile.platform === "prism") {
+      try {
+        const config = await loadConfig();
+        const gamePath = path.resolve(String(config.gamePath || ""));
+        if (await getMinecraftInstanceManager(gamePath) === "curseforge") {
+          const executable = await findCurseForgeLauncher(profile);
+          const child = spawn(executable, [], {
+            cwd: path.dirname(executable),
+            detached: true,
+            stdio: "ignore",
+            windowsHide: false
+          });
+          child.unref();
+          return { ok: true, target: "launcher", manager: "curseforge" };
+        }
+        const executable = await findPrismLauncher(profile, gamePath);
+        const prismRoot = path.dirname(path.dirname(gamePath));
+        const child = spawn(executable, ["--dir", prismRoot, "--show", path.basename(gamePath)], {
+          cwd: path.dirname(executable),
+          detached: true,
+          stdio: "ignore",
+          windowsHide: false
+        });
+        child.unref();
+        return { ok: true, target: "launcher", manager: "prism" };
+      } catch (error) {
+        return { ok: false, error: error.message };
+      }
+    }
     try {
       await shell.openExternal(`steam://nav/games/details/${profile.steamAppId}`);
       return { ok: true, target: "steam" };
@@ -1359,6 +1451,13 @@ function getGameProfile(gameId) {
   return GAME_PROFILES[String(gameId || DEFAULT_GAME_ID).toLowerCase()] || GAME_PROFILES[DEFAULT_GAME_ID];
 }
 
+function assertLoaderModWritesAllowed(gameId) {
+  const profile = getGameProfile(gameId);
+  if (profile.managesModsExternally) {
+    throw new Error(`${profile.name} pack files are managed by the selected Minecraft launcher. Update or repair the pack there.`);
+  }
+}
+
 async function resolvePayloadGameId(payload = {}) {
   if (payload?.gameId) {
     return getGameProfile(payload.gameId).id;
@@ -1370,6 +1469,12 @@ async function resolvePayloadGameId(payload = {}) {
 
 function getGameModsPath(gamePath, gameId) {
   const profile = getGameProfile(gameId);
+  if (profile.id === "minecraft") {
+    const resolved = path.resolve(String(gamePath || ""));
+    return fs.existsSync(path.join(resolved, "minecraftinstance.json"))
+      ? path.join(resolved, "mods")
+      : path.join(resolved, ...profile.modsPathSegments);
+  }
   return path.join(path.resolve(String(gamePath || "")), ...profile.modsPathSegments);
 }
 
@@ -1491,7 +1596,7 @@ async function detectGameInstall(gameId = DEFAULT_GAME_ID) {
     candidateRoots.push({ path: process.env[profile.envInstall], priority: -10 });
   }
 
-  const steamAppsFolders = await detectSteamAppsFolders();
+  const steamAppsFolders = profile.platform === "prism" ? [] : await detectSteamAppsFolders();
 
   for (const steamApps of steamAppsFolders) {
     const installedDir = await readSteamInstallDir(steamApps, profile.steamAppId);
@@ -1503,13 +1608,38 @@ async function detectGameInstall(gameId = DEFAULT_GAME_ID) {
     }
   }
 
-  for (const candidatePath of profile.extraCandidateRoots()) {
-    candidateRoots.push({ path: candidatePath, priority: 80 });
+  const extraCandidateRoots = [...profile.extraCandidateRoots()];
+  if (profile.platform === "prism") {
+    const instanceRoots = [
+      path.join(os.homedir(), "AppData", "Roaming", "PrismLauncher", "instances"),
+      path.join(getManagedPrismDataRoot(), "instances")
+    ];
+    for (const instancesRoot of instanceRoots) {
+      try {
+        const entries = await fsp.readdir(instancesRoot, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            extraCandidateRoots.push(path.join(instancesRoot, entry.name));
+          }
+        }
+      } catch {
+        // Prism and the GDG-managed data root are optional until Minecraft setup runs.
+      }
+    }
+    for (const candidatePath of await discoverCurseForgeMinecraftInstances()) {
+      extraCandidateRoots.push(candidatePath);
+    }
+  }
+
+  for (const candidatePath of extraCandidateRoots) {
+    const isCurseForgeMinecraft = profile.id === "minecraft"
+      && await exists(path.join(candidatePath, "minecraftinstance.json"));
+    candidateRoots.push({ path: candidatePath, priority: isCurseForgeMinecraft ? 70 : 80 });
   }
 
   const validCandidates = [];
   for (const candidate of dedupeCandidates(candidateRoots)) {
-    if (await isGameRoot(candidate.path, profile.id)) {
+    if (await isGameRoot(candidate.path, profile.id) && await isMatchingPrismPack(candidate.path, profile, profile.platform === "prism")) {
       const isGdgCopy = isGdgCopyPathForGame(candidate.path, profile.id);
       validCandidates.push({
         ...candidate,
@@ -1540,6 +1670,66 @@ async function detectGameInstall(gameId = DEFAULT_GAME_ID) {
     modsPath: "",
     isGdgCopy: false
   };
+}
+
+async function isMatchingPrismPack(candidatePath, profile, requireExactVersion = false) {
+  if (profile.platform !== "prism" || !profile.prismPackProjectId) {
+    return true;
+  }
+
+  const curseForgeMetadataPath = path.join(candidatePath, "minecraftinstance.json");
+  if (await exists(curseForgeMetadataPath)) {
+    try {
+      if (await exists(path.join(candidatePath, "install-journal.json"))) {
+        return false;
+      }
+      const metadata = JSON.parse(await fsp.readFile(curseForgeMetadataPath, "utf8"));
+      const projectMatches = String(metadata.projectID || "") === String(profile.prismPackProjectId);
+      const versionMatches = String(metadata.fileID || "") === String(profile.prismPackVersionId);
+      return projectMatches && (!requireExactVersion || versionMatches);
+    } catch {
+      return false;
+    }
+  }
+
+  try {
+    const values = parseSimpleIni(await fsp.readFile(path.join(candidatePath, "instance.cfg"), "utf8"));
+    const projectMatches = String(values.ManagedPackID || "") === String(profile.prismPackProjectId);
+    const versionMatches = String(values.ManagedPackVersionID || "") === String(profile.prismPackVersionId);
+    return projectMatches && (!requireExactVersion || versionMatches);
+  } catch {
+    return false;
+  }
+}
+
+async function discoverCurseForgeMinecraftInstances() {
+  const candidates = new Set();
+  const defaultInstancesRoot = path.join(os.homedir(), "curseforge", "minecraft", "Instances");
+  try {
+    const entries = await fsp.readdir(defaultInstancesRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        candidates.add(path.join(defaultInstancesRoot, entry.name));
+      }
+    }
+  } catch {
+    // CurseForge is optional until Minecraft setup runs.
+  }
+
+  const databasePath = path.join(os.homedir(), "AppData", "Roaming", "CurseForge", "agent", "GameInstances", "MinecraftGameInstance.json");
+  try {
+    const instances = JSON.parse(await fsp.readFile(databasePath, "utf8"));
+    for (const instance of Array.isArray(instances) ? instances : []) {
+      const installPath = String(instance?.installPath || "").trim();
+      if (installPath) {
+        candidates.add(path.resolve(installPath));
+      }
+    }
+  } catch {
+    // The instance database does not exist on a clean CurseForge install.
+  }
+
+  return [...candidates];
 }
 
 async function readSteamInstallDir(steamApps, appId) {
@@ -1612,13 +1802,16 @@ async function isGameRoot(candidatePath, gameId = DEFAULT_GAME_ID) {
     return false;
   }
 
-  for (const signal of profile.rootSignals) {
-    if (await exists(path.join(candidatePath, signal))) {
+  if (profile.id === "minecraft") {
+    if (await exists(path.join(candidatePath, "minecraftinstance.json"))) {
       return true;
     }
+    const prismSignals = await Promise.all(profile.rootSignals.map((signal) => exists(path.join(candidatePath, signal))));
+    return prismSignals.every(Boolean);
   }
 
-  return false;
+  const signalResults = await Promise.all(profile.rootSignals.map((signal) => exists(path.join(candidatePath, signal))));
+  return profile.rootSignalMode === "all" ? signalResults.every(Boolean) : signalResults.some(Boolean);
 }
 
 async function cloneGameInstall(payload = {}, onProgress = () => {}) {
@@ -1875,6 +2068,378 @@ async function findGameExecutable(gamePath, options = {}) {
   throw new Error(`No ${profile.name} executable was found.`);
 }
 
+function getManagedMinecraftRoot() {
+  const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
+  return path.join(localAppData, "GoldenDaysGaming", "Minecraft");
+}
+
+function getManagedPrismDataRoot() {
+  return path.join(getManagedMinecraftRoot(), "PrismData");
+}
+
+async function loadMinecraftBootstrapManifest(profile = GAME_PROFILES.minecraft) {
+  const raw = await fsp.readFile(profile.bootstrapManifestPath, "utf8");
+  const manifest = JSON.parse(raw);
+  const launcher = manifest?.launcher || {};
+  const pack = manifest?.pack || {};
+  const requiredFields = [
+    [launcher.name, "launcher name"],
+    [launcher.url, "launcher URL"],
+    [launcher.expectedPublisher, "launcher publisher"],
+    [pack.name, "pack name"],
+    [pack.projectId, "pack project ID"],
+    [pack.fileId, "pack file ID"],
+    [pack.installUri, "pack install URI"]
+  ];
+  const missing = requiredFields.find(([value]) => !String(value || "").trim());
+  if (missing) {
+    throw new Error(`Minecraft bootstrap manifest is missing ${missing[1]}.`);
+  }
+  if (!/^https:\/\//i.test(launcher.url)) {
+    throw new Error("The CurseForge installer download must use HTTPS.");
+  }
+  const expectedInstallUri = `curseforge://install?addonId=${pack.projectId}&fileId=${pack.fileId}`;
+  if (pack.installUri !== expectedInstallUri) {
+    throw new Error("Minecraft bootstrap install URI does not match the selected pack identity.");
+  }
+  return manifest;
+}
+
+async function provisionMinecraftInstance(payload = {}, onProgress = () => {}) {
+  const profile = getGameProfile("minecraft");
+  const existing = await detectGameInstall(profile.id);
+  if (existing.found) {
+    await ensureBundledAddons(existing.path, profile);
+    const manager = await getMinecraftInstanceManager(existing.path);
+    return {
+      ok: true,
+      created: false,
+      instancePath: existing.path,
+      modsPath: getGameModsPath(existing.path, profile.id),
+      launcherPath: manager === "curseforge"
+        ? await findCurseForgeLauncher(profile)
+        : await findPrismLauncher(profile, existing.path),
+      manager,
+      managed: manager === "curseforge" || isPathInside(existing.path, getManagedPrismDataRoot())
+    };
+  }
+
+  if (process.platform !== "win32" || process.arch !== "x64") {
+    throw new Error("Automatic Minecraft setup currently supports Windows x64. You can still browse to an existing Prism or CurseForge instance.");
+  }
+
+  const manifest = await loadMinecraftBootstrapManifest(profile);
+  if (String(manifest.pack.projectId) !== String(profile.prismPackProjectId) || String(manifest.pack.fileId) !== String(profile.prismPackVersionId)) {
+    throw new Error("Minecraft bootstrap pack identity does not match the selected GDG server.");
+  }
+
+  const managedRoot = getManagedMinecraftRoot();
+  const cacheRoot = path.join(managedRoot, "cache");
+  const minimumFreeBytes = Number(manifest.minimumFreeBytes || 0);
+  const diskSpace = await getDiskSpace(managedRoot);
+  if (minimumFreeBytes && diskSpace.freeBytes < minimumFreeBytes) {
+    throw new Error(`Minecraft setup needs at least ${formatBytes(minimumFreeBytes)} free, but this drive has ${formatBytes(diskSpace.freeBytes)}.`);
+  }
+  await fsp.mkdir(cacheRoot, { recursive: true });
+
+  reportSyncProgress(onProgress, {
+    phase: "preparing",
+    message: "Preparing CurseForge for the Golden Days Minecraft profile.",
+    current: 0,
+    total: 3
+  });
+
+  const launcherPath = await ensureCurseForgeRuntime(manifest.launcher, cacheRoot, onProgress);
+
+  reportSyncProgress(onProgress, {
+    phase: "installing",
+    message: "CurseForge is installing the complete Superior profile. Keep CurseForge open until setup finishes.",
+    modName: manifest.pack.name,
+    current: 2,
+    total: 3
+  });
+
+  const child = spawn(launcherPath, [manifest.pack.installUri], {
+    cwd: path.dirname(launcherPath),
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false
+  });
+  await new Promise((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  child.unref();
+
+  const timeoutMs = Math.max(Number(manifest.confirmationTimeoutMinutes || 30), 1) * 60 * 1000;
+  const installed = await waitForMatchingCurseForgeInstance(profile, manifest.pack, timeoutMs, onProgress);
+  await ensureBundledAddons(installed.path, profile);
+
+  reportSyncProgress(onProgress, {
+    phase: "complete",
+    message: `${manifest.pack.name} is ready in CurseForge with every required pack file.`,
+    current: 3,
+    total: 3
+  });
+
+  return {
+    ok: true,
+    created: true,
+    instancePath: installed.path,
+    modsPath: getGameModsPath(installed.path, profile.id),
+    launcherPath,
+    manager: "curseforge",
+    managed: true,
+    dataRoot: path.dirname(path.dirname(installed.path)),
+    sourcePage: manifest.pack.sourcePage || "",
+    licenseUrl: manifest.launcher.downloadPage || ""
+  };
+}
+
+async function ensureCurseForgeRuntime(launcher, cacheRoot, onProgress = () => {}) {
+  try {
+    return await findCurseForgeLauncher(GAME_PROFILES.minecraft);
+  } catch {
+    // Install the signed standalone client below.
+  }
+
+  const installerPath = await downloadSignedCurseForgeInstaller(launcher, cacheRoot, (download) => {
+    reportSyncProgress(onProgress, {
+      phase: "downloading",
+      message: `Downloading the signed ${launcher.name} installer.`,
+      modName: launcher.name,
+      current: 1,
+      total: 3,
+      ...download
+    });
+  });
+
+  reportSyncProgress(onProgress, {
+    phase: "installing",
+    message: `Installing ${launcher.name}.`,
+    modName: launcher.name,
+    current: 1,
+    total: 3
+  });
+  const child = spawn(installerPath, [], {
+    cwd: path.dirname(installerPath),
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false
+  });
+  await new Promise((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  child.unref();
+
+  const deadline = Date.now() + 10 * 60 * 1000;
+  while (Date.now() < deadline) {
+    try {
+      const executable = await findCurseForgeLauncher(GAME_PROFILES.minecraft);
+      await delay(2000);
+      return executable;
+    } catch {
+      reportSyncProgress(onProgress, {
+        phase: "installing",
+        message: `Waiting for ${launcher.name} installation to finish.`,
+        modName: launcher.name,
+        current: 1,
+        total: 3
+      });
+      await delay(1000);
+    }
+  }
+  throw new Error("CurseForge installation timed out. Finish or retry the CurseForge installer, then run Make Me Ready again.");
+}
+
+async function downloadSignedCurseForgeInstaller(launcher, cacheRoot, onDownload = () => {}) {
+  const fileName = sanitizeFolderName(launcher.fileName || "CurseForgeInstaller.exe");
+  const targetPath = path.join(cacheRoot, fileName);
+  const maxSizeBytes = Math.max(Number(launcher.maxSizeBytes || 0), 10 * 1024 * 1024);
+
+  if (await exists(targetPath)) {
+    try {
+      await verifyWindowsPublisher(targetPath, launcher.expectedPublisher);
+      const stats = await fsp.stat(targetPath);
+      onDownload({ bytesReceived: stats.size, bytesTotal: stats.size });
+      return targetPath;
+    } catch {
+      await fsp.rm(targetPath, { force: true });
+    }
+  }
+
+  const partialPath = `${targetPath}.part`;
+  await fsp.rm(partialPath, { force: true });
+  const response = await fetch(launcher.url, {
+    redirect: "follow",
+    cache: "no-store",
+    headers: { "User-Agent": "GDG-Mod-Loader" }
+  });
+  if (!response.ok) {
+    throw new Error(`Download failed for ${launcher.name}: HTTP ${response.status}.`);
+  }
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (contentLength && contentLength > maxSizeBytes) {
+    throw new Error(`${launcher.name} installer exceeded the allowed download size.`);
+  }
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    throw new Error(`Download stream was unavailable for ${launcher.name}.`);
+  }
+
+  const writeStream = fs.createWriteStream(partialPath, { flags: "wx" });
+  let receivedBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const chunk = Buffer.from(value);
+      receivedBytes += chunk.length;
+      if (receivedBytes > maxSizeBytes) {
+        throw new Error(`${launcher.name} installer exceeded the allowed download size.`);
+      }
+      if (!writeStream.write(chunk)) {
+        await once(writeStream, "drain");
+      }
+      onDownload({ bytesReceived: receivedBytes, bytesTotal: contentLength || 0 });
+    }
+    await new Promise((resolve, reject) => {
+      writeStream.end(resolve);
+      writeStream.once("error", reject);
+    });
+  } catch (error) {
+    writeStream.destroy();
+    await fsp.rm(partialPath, { force: true }).catch(() => {});
+    throw error;
+  }
+
+  await verifyWindowsPublisher(partialPath, launcher.expectedPublisher);
+  await fsp.rename(partialPath, targetPath);
+  return targetPath;
+}
+
+async function verifyWindowsPublisher(filePath, expectedPublisher) {
+  if (process.platform !== "win32") {
+    throw new Error("Authenticode verification is only available on Windows.");
+  }
+  const escapedPath = String(filePath).replace(/'/g, "''");
+  const command = `$signature = Get-AuthenticodeSignature -LiteralPath '${escapedPath}'; [pscustomobject]@{ Status = [string]$signature.Status; Subject = [string]$signature.SignerCertificate.Subject } | ConvertTo-Json -Compress`;
+  const { stdout } = await execFileAsync("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    command
+  ], { windowsHide: true, timeout: 30000, maxBuffer: 1024 * 1024 });
+  const signature = JSON.parse(String(stdout || "{}").trim() || "{}");
+  if (signature.Status !== "Valid" || !String(signature.Subject || "").toLowerCase().includes(String(expectedPublisher || "").toLowerCase())) {
+    throw new Error(`CurseForge installer signature verification failed. Expected a valid ${expectedPublisher} signature.`);
+  }
+  return signature;
+}
+
+async function waitForMatchingCurseForgeInstance(profile, pack, timeoutMs, onProgress = () => {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastMissing = [];
+  while (Date.now() < deadline) {
+    const candidates = await discoverCurseForgeMinecraftInstances();
+    for (const candidatePath of candidates) {
+      const metadataPath = path.join(candidatePath, "minecraftinstance.json");
+      try {
+        const metadata = JSON.parse(await fsp.readFile(metadataPath, "utf8"));
+        if (String(metadata.projectID || "") !== String(pack.projectId) || String(metadata.fileID || "") !== String(pack.fileId)) {
+          continue;
+        }
+        if (await exists(path.join(candidatePath, "install-journal.json"))) {
+          continue;
+        }
+        lastMissing = await findMissingMinecraftPackFiles(candidatePath, pack.requiredFileNames || []);
+        if (lastMissing.length === 0 && await isGameRoot(candidatePath, profile.id)) {
+          return { found: true, path: candidatePath, metadata };
+        }
+      } catch {
+        // CurseForge writes instance metadata while installation is still in progress.
+      }
+    }
+
+    reportSyncProgress(onProgress, {
+      phase: "installing",
+      message: lastMissing.length
+        ? `CurseForge is finishing ${pack.name}; ${lastMissing.length} required pack files are still pending.`
+        : `Waiting for CurseForge to finish the complete ${pack.name} profile.`,
+      modName: pack.name,
+      current: 2,
+      total: 3
+    });
+    await delay(2000);
+  }
+  const detail = lastMissing.length ? ` Missing: ${lastMissing.join(", ")}.` : "";
+  throw new Error(`Minecraft setup timed out while waiting for CurseForge.${detail} Retry Make Me Ready after the CurseForge installation finishes.`);
+}
+
+async function findMissingMinecraftPackFiles(instancePath, requiredFileNames) {
+  const required = new Map(requiredFileNames.map((name) => [String(name).toLowerCase(), String(name)]));
+  if (required.size === 0) {
+    return [];
+  }
+  const pending = [instancePath];
+  while (pending.length && required.size) {
+    const current = pending.pop();
+    let entries = [];
+    try {
+      entries = await fsp.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        pending.push(path.join(current, entry.name));
+      } else if (entry.isFile()) {
+        required.delete(entry.name.toLowerCase());
+      }
+    }
+  }
+  return [...required.values()];
+}
+
+function isPathInside(candidatePath, parentPath) {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(candidatePath));
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== "..");
+}
+
+async function findPrismLauncher(profile = GAME_PROFILES.minecraft, gamePath = "") {
+  const candidates = profile.launcherCandidates?.() || [];
+  if (gamePath && isPathInside(gamePath, getManagedPrismDataRoot())) {
+    candidates.sort((a, b) => Number(!isPathInside(a, getManagedMinecraftRoot())) - Number(!isPathInside(b, getManagedMinecraftRoot())));
+  }
+  for (const candidate of candidates) {
+    if (await exists(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error("Prism Launcher was not found. Install Prism Launcher, then retry.");
+}
+
+async function findCurseForgeLauncher(profile = GAME_PROFILES.minecraft) {
+  for (const candidate of profile.curseForgeLauncherCandidates?.() || []) {
+    if (await exists(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error("CurseForge standalone was not found. Run Make Me Ready to install it.");
+}
+
+async function getMinecraftInstanceManager(gamePath) {
+  return await exists(path.join(path.resolve(String(gamePath || "")), "minecraftinstance.json"))
+    ? "curseforge"
+    : "prism";
+}
+
 async function launchGame(payload = {}) {
   const gameId = await resolvePayloadGameId(payload);
   const profile = getGameProfile(gameId);
@@ -1885,6 +2450,61 @@ async function launchGame(payload = {}) {
   const gamePath = path.resolve(String(payload.gamePath));
   if (!(await isGameRoot(gamePath, gameId))) {
     throw new Error(`That folder does not look like a ${profile.name} install.`);
+  }
+
+  if (profile.platform === "prism") {
+    await ensureBundledAddons(gamePath, profile);
+    const manager = await getMinecraftInstanceManager(gamePath);
+    if (manager === "curseforge") {
+      const metadata = JSON.parse(await fsp.readFile(path.join(gamePath, "minecraftinstance.json"), "utf8"));
+      const instanceId = String(metadata.guid || "").trim();
+      const gameTypeId = Number(metadata.gameTypeID || profile.curseForgeGameId || 432);
+      if (!instanceId) {
+        throw new Error("CurseForge instance metadata is missing its instance ID. Repair the profile in CurseForge, then retry.");
+      }
+      const executable = await findCurseForgeLauncher(profile);
+      const launchUri = `curseforge://launch-game?instanceId=${encodeURIComponent(instanceId)}&gameId=${gameTypeId}`;
+      const child = spawn(executable, [launchUri], {
+        cwd: path.dirname(executable),
+        detached: true,
+        stdio: "ignore",
+        windowsHide: false
+      });
+      child.unref();
+      return {
+        ok: true,
+        gamePath,
+        executable,
+        manager,
+        requestedEac: false,
+        eacEnabled: false
+      };
+    }
+
+    const executable = await findPrismLauncher(profile, gamePath);
+    const instanceId = path.basename(gamePath);
+    const prismRoot = path.dirname(path.dirname(gamePath));
+    const launchArgs = ["--dir", prismRoot, "--launch", instanceId];
+    const serverAddress = String(payload.serverAddress || profile.launchServer || "").trim();
+    if (serverAddress) {
+      launchArgs.push("--server", serverAddress);
+    }
+    const child = spawn(executable, launchArgs, {
+      cwd: path.dirname(executable),
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false
+    });
+    child.unref();
+
+    return {
+      ok: true,
+      gamePath,
+      executable,
+      manager,
+      requestedEac: false,
+      eacEnabled: false
+    };
   }
 
   const eacEnabled = profile.supportsEac && Boolean(payload.eacEnabled);
@@ -1906,6 +2526,40 @@ async function launchGame(payload = {}) {
     requestedEac: eacEnabled,
     eacEnabled: actualEacEnabled
   };
+}
+
+async function ensureBundledAddons(gamePath, profile) {
+  const addons = profile.bundledAddons || [];
+  if (addons.length === 0) {
+    return;
+  }
+
+  const modsPath = getGameModsPath(gamePath, profile.id);
+  await fsp.mkdir(modsPath, { recursive: true });
+
+  for (const addon of addons) {
+    if (!(await exists(addon.sourcePath))) {
+      throw new Error(`Bundled Minecraft addon is missing: ${path.basename(addon.sourcePath)}`);
+    }
+
+    const targetPath = path.join(modsPath, addon.targetName);
+    const sourceBytes = await fsp.readFile(addon.sourcePath);
+    const sourceHash = crypto.createHash("sha256").update(sourceBytes).digest("hex");
+    const targetHash = await exists(targetPath) ? await hashFile(targetPath) : "";
+    if (sourceHash === targetHash) {
+      continue;
+    }
+
+    const entries = await fsp.readdir(modsPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const normalized = entry.name.toLowerCase();
+      if (entry.isFile() && normalized.startsWith(addon.ownedPrefix) && normalized.endsWith(".jar") && entry.name !== addon.targetName) {
+        await fsp.rm(path.join(modsPath, entry.name), { force: true });
+      }
+    }
+
+    await fsp.writeFile(targetPath, sourceBytes);
+  }
 }
 
 async function scanMods(gamePath, options = {}) {
@@ -2094,8 +2748,8 @@ async function previewSync(payload) {
   validateManifest(manifest, gameId);
 
   const gameCompatibility = compareGameCompatibility(manifest, await getGameVersionInfo(gamePath, gameId), gameId);
-  const local = await scanMods(gamePath, { hash: true, gameId });
-  const plan = buildSyncPlan(manifest, local.mods);
+  const local = await scanMods(gamePath, { hash: manifest.mods.some((mod) => Boolean(mod.folderSha256)), gameId });
+  const plan = profile.platform === "prism" ? buildSyncPlan(manifest, []) : buildSyncPlan(manifest, local.mods);
   const bootstrap = await getGameBootstrapStatus(gamePath, manifest, gameId);
   const sizeSummary = getManifestSizeSummary(manifest);
   const installState = await readInstallState(gamePath);
@@ -2129,12 +2783,14 @@ async function previewSync(payload) {
 }
 
 async function applySync(payload, onProgress = () => {}) {
+  assertLoaderModWritesAllowed(await resolvePayloadGameId(payload));
   const preview = await previewSync(payload);
   const gameId = defaultManifestGameId(preview.manifest);
   const profile = getGameProfile(gameId);
   const repairMode = Boolean(payload?.repair);
   if (preview.gameCompatibility.checked && !preview.gameCompatibility.ok) {
-    throw new Error(`${preview.gameCompatibility.reason} Match ${profile.name} to the server version in Steam before installing GDG mods.`);
+    const versionManager = profile.platform === "prism" ? "Minecraft launcher" : "Steam";
+    throw new Error(`${preview.gameCompatibility.reason} Match ${profile.name} to the server version in ${versionManager} before continuing.`);
   }
 
   const spaceRequirement = getSyncSpaceRequirement(preview, { repairMode });
@@ -2495,6 +3151,7 @@ async function createFailedApplyResult(payload, error, onProgress = () => {}) {
 }
 
 async function cleanLocalMods(payload, onProgress = () => {}) {
+  assertLoaderModWritesAllowed(await resolvePayloadGameId(payload));
   const preview = await previewSync(payload);
   const gameId = defaultManifestGameId(preview.manifest);
   const modsPath = getGameModsPath(payload.gamePath, gameId);
@@ -2679,6 +3336,7 @@ async function cleanLocalMods(payload, onProgress = () => {}) {
 
 async function purgeModsFolder(payload, onProgress = () => {}) {
   const gameId = await resolvePayloadGameId(payload);
+  assertLoaderModWritesAllowed(gameId);
   const profile = getGameProfile(gameId);
   const rawGamePath = String(payload?.gamePath || "").trim();
 
@@ -2911,6 +3569,7 @@ function getUniqueBackupTarget(backupRoot, folderName, usedTargets) {
 
 async function cleanManagedMods(payload, onProgress = () => {}) {
   const gameId = await resolvePayloadGameId(payload);
+  assertLoaderModWritesAllowed(gameId);
   const profile = getGameProfile(gameId);
   const gamePath = path.resolve(String(payload?.gamePath || ""));
   if (!gamePath || !(await isGameRoot(gamePath, gameId))) {
@@ -3206,10 +3865,10 @@ async function runPreflightDoctor(payload = {}) {
           "Game version",
           preview.gameCompatibility.ok ? "pass" : "fail",
           preview.gameCompatibility.reason,
-          preview.gameCompatibility.ok ? "" : `Match ${profile.name} to the server version in Steam, then retry the check.`
+          preview.gameCompatibility.ok ? "" : `Match ${profile.name} to the server version in ${profile.platform === "prism" ? "the Minecraft launcher" : "Steam"}, then retry the check.`
         );
       } else {
-        addCheck("game-version", "Game version", "warn", preview.gameCompatibility.reason, "Publish a Steam build id for stricter checks.");
+        addCheck("game-version", "Game version", "warn", preview.gameCompatibility.reason, profile.platform === "prism" ? "Publish Minecraft pack metadata for stricter checks." : "Publish a Steam build id for stricter checks.");
       }
 
       const skippedCount = preview.skippedServerOnly?.length || 0;
@@ -3567,6 +4226,15 @@ function formatBytes(bytes) {
 async function loadManifest(input) {
   const trimmed = String(input || "").trim();
 
+  if (trimmed.startsWith("bundled://")) {
+    const fileName = trimmed.slice("bundled://".length);
+    if (!fileName || path.basename(fileName) !== fileName) {
+      throw new Error("Bundled manifest name is invalid.");
+    }
+    const filePath = path.join(__dirname, "..", "server-directory", fileName);
+    return JSON.parse(await fsp.readFile(filePath, "utf8"));
+  }
+
   if (/^https?:\/\//i.test(trimmed)) {
     return loadRemoteManifest(trimmed);
   }
@@ -3578,9 +4246,21 @@ async function loadManifest(input) {
 
 async function loadServerDirectory(input) {
   const source = String(input || DEFAULT_SERVER_DIRECTORY).trim();
-  const directory = /^https?:\/\//i.test(source)
+  let directory = /^https?:\/\//i.test(source)
     ? await fetchJson(source)
     : JSON.parse(await fsp.readFile(normalizeLocalPath(source), "utf8"));
+
+  if (directory && !/^https?:\/\//i.test(source) && path.basename(normalizeLocalPath(source)).toLowerCase() === "gdg.servers.local.json") {
+    const bundled = JSON.parse(await fsp.readFile(DEFAULT_SERVER_DIRECTORY, "utf8"));
+    const existingIds = new Set((directory.servers || []).map((server) => String(server.id || "")));
+    directory = {
+      ...directory,
+      servers: [
+        ...(directory.servers || []),
+        ...(bundled.servers || []).filter((server) => !existingIds.has(String(server.id || "")))
+      ]
+    };
+  }
 
   if (!directory || !Array.isArray(directory.servers)) {
     throw new Error("Server directory must include a servers array.");
@@ -3642,7 +4322,7 @@ async function checkServerHealth(server) {
 async function checkGameServerStatus(server) {
   const host = String(server?.host || "").trim();
   const gamePort = Number(server?.gamePort || 26900);
-  const queryPort = Number(server?.queryPort || gamePort + 1);
+  const queryPort = server?.game === "minecraft" ? Number(server?.queryPort || 0) : Number(server?.queryPort || gamePort + 1);
   const hasGamePort = Number.isFinite(gamePort) && gamePort > 0;
 
   if (!host || (!hasGamePort && (!Number.isFinite(queryPort) || queryPort <= 0))) {
@@ -3795,6 +4475,9 @@ async function getDiskSpace(gamePath) {
 async function getGameVersionInfo(gamePath, gameId = DEFAULT_GAME_ID) {
   const profile = getGameProfile(gameId);
   const resolvedGamePath = path.resolve(String(gamePath || ""));
+  if (profile.id === "minecraft") {
+    return getMinecraftInstanceVersionInfo(resolvedGamePath, profile);
+  }
   const appManifestPath = findSteamAppManifestPath(resolvedGamePath, gameId);
   const version = {
     gamePath: resolvedGamePath,
@@ -3820,6 +4503,102 @@ async function getGameVersionInfo(gamePath, gameId = DEFAULT_GAME_ID) {
     steamUpdateState: values.StateFlags || values.stateflags || "",
     steamInstallDir: values.installdir || ""
   };
+}
+
+async function getMinecraftInstanceVersionInfo(instancePath, profile = GAME_PROFILES.minecraft) {
+  return await getMinecraftInstanceManager(instancePath) === "curseforge"
+    ? getCurseForgeInstanceVersionInfo(instancePath, profile)
+    : getPrismInstanceVersionInfo(instancePath, profile);
+}
+
+async function getCurseForgeInstanceVersionInfo(instancePath, profile = GAME_PROFILES.minecraft) {
+  const metadataPath = path.join(instancePath, "minecraftinstance.json");
+  const version = {
+    gamePath: instancePath,
+    steamAppId: profile.prismPackProjectId || "",
+    steamAppManifestPath: metadataPath,
+    steamBuildId: "",
+    steamUpdateState: "",
+    steamInstallDir: path.basename(instancePath),
+    canOpenSteamUpdate: process.platform === "win32",
+    versionSource: "curseforge",
+    minecraftVersion: "",
+    modLoaderVersion: "",
+    managedPackId: "",
+    managedPackVersionId: "",
+    managedPackVersionName: ""
+  };
+
+  try {
+    const metadata = JSON.parse(await fsp.readFile(metadataPath, "utf8"));
+    const managedPackVersionId = String(metadata.fileID || "");
+    const loaderName = String(metadata.baseModLoader?.name || "");
+    return {
+      ...version,
+      steamBuildId: managedPackVersionId,
+      steamUpdateState: "managed",
+      minecraftVersion: String(metadata.gameVersion || metadata.baseModLoader?.minecraftVersion || ""),
+      modLoaderVersion: loaderName.replace(/^forge-/i, ""),
+      managedPackId: String(metadata.projectID || ""),
+      managedPackVersionId,
+      managedPackVersionName: profile.prismPackVersionName || String(metadata.name || "")
+    };
+  } catch {
+    return version;
+  }
+}
+
+async function getPrismInstanceVersionInfo(instancePath, profile = GAME_PROFILES.minecraft) {
+  const cfgPath = path.join(instancePath, "instance.cfg");
+  const packPath = path.join(instancePath, "mmc-pack.json");
+  const version = {
+    gamePath: instancePath,
+    steamAppId: profile.prismPackProjectId || "",
+    steamAppManifestPath: cfgPath,
+    steamBuildId: "",
+    steamUpdateState: "",
+    steamInstallDir: path.basename(instancePath),
+    canOpenSteamUpdate: process.platform === "win32",
+    versionSource: "prism",
+    minecraftVersion: "",
+    modLoaderVersion: "",
+    managedPackId: "",
+    managedPackVersionId: "",
+    managedPackVersionName: ""
+  };
+
+  try {
+    const values = parseSimpleIni(await fsp.readFile(cfgPath, "utf8"));
+    const pack = JSON.parse(await fsp.readFile(packPath, "utf8"));
+    const components = Array.isArray(pack.components) ? pack.components : [];
+    const minecraft = components.find((component) => component.uid === "net.minecraft");
+    const forge = components.find((component) => component.uid === "net.minecraftforge");
+    const managedPackVersionId = String(values.ManagedPackVersionID || "");
+
+    return {
+      ...version,
+      steamBuildId: managedPackVersionId,
+      steamUpdateState: values.ManagedPack ? "managed" : "custom",
+      minecraftVersion: String(minecraft?.version || minecraft?.cachedVersion || ""),
+      modLoaderVersion: String(forge?.version || forge?.cachedVersion || ""),
+      managedPackId: String(values.ManagedPackID || ""),
+      managedPackVersionId,
+      managedPackVersionName: String(values.ManagedPackVersionName || profile.prismPackVersionName || "")
+    };
+  } catch {
+    return version;
+  }
+}
+
+function parseSimpleIni(text) {
+  const values = {};
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const match = /^([^=;#\[][^=]*)=(.*)$/.exec(line);
+    if (match) {
+      values[match[1].trim()] = match[2].trim();
+    }
+  }
+  return values;
 }
 
 function findSteamAppManifestPath(gamePath, gameId = DEFAULT_GAME_ID) {
@@ -3853,6 +4632,35 @@ function compareGameCompatibility(manifest, localVersion, gameId = DEFAULT_GAME_
   const requiredSteamBuildId = String(manifest.server?.steamBuildId || "").trim();
   const requiredGameVersion = String(manifest.server?.gameVersion || gameVersionMap[requiredSteamBuildId] || "").trim();
   const requiredLabel = formatGameVersionLabel(requiredSteamBuildId, requiredGameVersion, gameVersionMap);
+
+  if (profile.platform === "prism") {
+    const requiredPack = manifest.server?.prismPack || {};
+    const mismatches = [];
+    if (requiredPack.projectId && localVersion.managedPackId !== String(requiredPack.projectId)) {
+      mismatches.push(`CurseForge project ${requiredPack.projectId}`);
+    }
+    if (requiredPack.versionId && localVersion.managedPackVersionId !== String(requiredPack.versionId)) {
+      mismatches.push(requiredPack.versionName || `pack file ${requiredPack.versionId}`);
+    }
+    if (requiredPack.minecraftVersion && localVersion.minecraftVersion !== String(requiredPack.minecraftVersion)) {
+      mismatches.push(`Minecraft ${requiredPack.minecraftVersion}`);
+    }
+    if (requiredPack.forgeVersion && localVersion.modLoaderVersion !== String(requiredPack.forgeVersion)) {
+      mismatches.push(`Forge ${requiredPack.forgeVersion}`);
+    }
+
+    return {
+      ok: mismatches.length === 0,
+      checked: true,
+      reason: mismatches.length === 0
+        ? `Minecraft instance matches ${requiredPack.versionName || requiredGameVersion || "the required pack"}.`
+        : `This Minecraft instance does not match the server. Required: ${mismatches.join(", ")}.`,
+      local: localVersion,
+      requiredGameVersion,
+      requiredSteamBuildId,
+      gameVersionMap
+    };
+  }
 
   if (!requiredGameVersion && !requiredSteamBuildId) {
     return {

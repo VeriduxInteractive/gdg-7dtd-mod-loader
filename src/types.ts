@@ -1,4 +1,4 @@
-export type GameId = "7dtd" | "repo";
+export type GameId = "7dtd" | "repo" | "minecraft";
 
 export type LoaderConfig = {
   configVersion: number;
@@ -95,6 +95,13 @@ export type ServerManifest = {
     gameVersion?: string;
     steamBuildId?: string;
     gameVersionMap?: Record<string, string>;
+    prismPack?: {
+      projectId: string;
+      versionId: string;
+      versionName: string;
+      minecraftVersion: string;
+      forgeVersion: string;
+    };
   };
   generatedAt?: string;
   mods: ManifestMod[];
@@ -108,6 +115,12 @@ export type GameVersionInfo = {
   steamUpdateState: string;
   steamInstallDir: string;
   canOpenSteamUpdate: boolean;
+  versionSource?: "steam" | "prism" | "curseforge";
+  minecraftVersion?: string;
+  modLoaderVersion?: string;
+  managedPackId?: string;
+  managedPackVersionId?: string;
+  managedPackVersionName?: string;
 };
 
 export type GameCompatibility = {
@@ -211,6 +224,8 @@ export type DirectoryServer = {
   queryPort?: number;
   syncUrl: string;
   recommended?: boolean;
+  modManager?: "prism" | "curseforge";
+  packUrl?: string;
 };
 
 export type ServerDirectory = {
@@ -277,6 +292,18 @@ export type GdgApi = {
   getInitialState: () => Promise<{ config: LoaderConfig; detected: DetectedGame }>;
   saveConfig: (config: Partial<LoaderConfig>) => Promise<LoaderConfig>;
   detectGame: (payload?: { gameId?: GameId }) => Promise<DetectedGame>;
+  provisionMinecraft: (payload?: { gameId?: "minecraft" }) => Promise<{
+    ok: boolean;
+    created: boolean;
+    instancePath: string;
+    modsPath: string;
+    launcherPath: string;
+    manager: "prism" | "curseforge";
+    managed: boolean;
+    dataRoot?: string;
+    sourcePage?: string;
+    licenseUrl?: string;
+  }>;
   selectGameFolder: () => Promise<{ canceled: true } | { canceled: false; path: string; valid: boolean }>;
   selectManifestFile: () => Promise<{ canceled: true } | { canceled: false; path: string }>;
   loadServerDirectory: (input?: string) => Promise<ServerDirectory>;
@@ -299,8 +326,8 @@ export type GdgApi = {
   onSyncProgress: (callback: (progress: SyncProgress) => void) => () => void;
   onSupportBundleProgress: (callback: (progress: SyncProgress) => void) => () => void;
   onGameCopyDeleted: (callback: (payload: { config: LoaderConfig; detected: DetectedGame; deletedPath: string }) => void) => () => void;
-  launchGame: (payload: { gameId?: GameId; gamePath: string; eacEnabled: boolean }) => Promise<LaunchGameResult>;
-  openSteamUpdate: () => Promise<{ ok: boolean; target?: "steam" | "web"; error?: string }>;
+  launchGame: (payload: { gameId?: GameId; gamePath: string; eacEnabled: boolean; serverAddress?: string }) => Promise<LaunchGameResult>;
+  openSteamUpdate: () => Promise<{ ok: boolean; target?: "steam" | "web" | "launcher"; error?: string }>;
   openDiagnosticLog: () => Promise<{ ok: boolean; error?: string; path: string }>;
   createSupportBundle: () => Promise<{ ok: boolean; error?: string; path: string; folderPath: string; fileName: string }>;
   copyFileToClipboard: (filePath: string) => Promise<{ ok: boolean; error?: string; path?: string }>;

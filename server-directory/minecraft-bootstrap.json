@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "launcher": {
+    "name": "CurseForge standalone",
+    "platform": "windows-x64",
+    "fileName": "CurseForgeInstaller.exe",
+    "url": "https://download.overwolf.com/install/Download?Name=CurseForge&ExtensionId=cfiahnpaolfnlgaihhmobmnjdafknjnjdpdabpcm",
+    "downloadPage": "https://www.curseforge.com/download/app",
+    "expectedPublisher": "Overwolf Ltd",
+    "maxSizeBytes": 104857600
+  },
+  "pack": {
+    "name": "Superior RPG 1.8.3",
+    "projectId": "1293866",
+    "fileId": "8348938",
+    "installUri": "curseforge://install?addonId=1293866&fileId=8348938",
+    "sourcePage": "https://www.curseforge.com/minecraft/modpacks/superior-the-greatest-rpg-modpack-ever-made/files/8348938",
+    "requiredFileNames": [
+      "Frozy's Quest Book.zip",
+      "noendremeyes.zip",
+      "RoE_SFX 0.0.3.jar",
+      "eco_stack_manager-forge-1.20.1-1.4.1.jar",
+      "mods_optimizer-forge-1.20.1-4.3.0.jar",
+      "MandalasGUI+Dakmode_1.21.8_v2.5.zip",
+      "MandalasGUI_AddOn+DarkModded_V6.5.zip",
+      "idasconfig-1.13.0-1.20.1.zip",
+      "lootr_liason-1.2.jar",
+      "Vulmoons calaclysm remake_0.5.zip",
+      "red_lightning_iss_2.zip",
+      "yellow_lightning_iss_2.zip",
+      "soul_fire_iss_2.zip",
+      "superior-miapi-0.1.0.jar"
+    ]
+  },
+  "minimumFreeBytes": 5368709120,
+  "confirmationTimeoutMinutes": 30
+}

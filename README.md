@@ -4,15 +4,18 @@ Golden Days Gaming desktop mod loader for syncing a player's game client mods wi
 
 ## Vision
 
-The first release focuses on 7 Days to Die, with R.E.P.O. support now starting as a second game adapter:
+The loader supports 7 Days to Die, R.E.P.O., and a CurseForge-managed Minecraft Java profile:
 
 - Detect the local 7 Days to Die install.
 - Detect the local R.E.P.O. install.
+- Detect an existing compatible Superior RPG CurseForge or Prism instance, or install the signed CurseForge standalone app and request the exact pack through CurseForge.
 - Let the player choose whether to use that install, create a `7 Days To Die - GDG` copy, or skip setup.
 - Let the player switch the app's game profile and create a separate `R.E.P.O. - GDG` copy.
 - Read a Golden Days manifest from a server or hosted mod-pack feed.
 - Compare the manifest against the player's local mod folder.
 - For R.E.P.O., compare and install packages under `BepInEx/plugins`.
+- For Minecraft, let CurseForge obtain the complete official Superior profile through its first-party install flow, then launch the selected instance directly into the GDG server.
+- Install and update the GDG-owned Quick Join addon, which adds live Golden Days server status and one-click joining to Minecraft's title screen.
 - Install or update missing client-side mod packages.
 - Block server-only manifest entries from client install and track GDG-managed mods locally.
 - Repair, purge, back up, restore, or permanently delete mods from the selected install.
@@ -24,12 +27,19 @@ The code is structured so other games can be added as adapters instead of rewrit
 
 ## Game Adapters
 
-The desktop app currently exposes two game profiles:
+The desktop app currently exposes three game profiles:
 
 - `7dtd`: Steam app `251570`, mod root `Mods`, package zips must contain a 7 Days to Die mod folder with `ModInfo.xml`.
 - `repo`: Steam app `3241660`, mod root `BepInEx/plugins`, package zips can contain a self-contained folder or direct plugin files that the loader installs into a managed folder.
+- `minecraft`: Superior RPG `1.8.3`, Minecraft `1.20.1`, Forge `47.4.20`, CurseForge project `1293866` / file `8348938`. Existing compatible CurseForge and Prism instances are supported. If none exists, Make Me Ready downloads the official CurseForge standalone installer over HTTPS, verifies its valid `Overwolf Ltd` Authenticode signature, requests the exact project/file through CurseForge, verifies the completed profile, adds the GDG-owned Quick Join addon, and launches it directly to `goldendays.mcsh.io`.
 
-Manifests identify the target game with `game: "7dtd"` or `game: "repo"`. The built-in server directory includes separate rows per game so players can switch to R.E.P.O. and install the GDG R.E.P.O. pack once its manifest URL is published.
+The Minecraft profile never alters third-party Superior pack mods. It manages only the bundled `GDG-Quick-Join.jar` addon owned by Golden Days Gaming. The addon's server list is stored in `config/gdg-quick-join.json`, so additional GDG Minecraft servers can be added without rebuilding it.
+
+Players complete Microsoft sign-in in CurseForge before first play. Because the pack is installed by CurseForge itself, files whose authors disable third-party distribution are obtained through the authorized first-party flow instead of sending players through Prism's manual-download pages. GDG Mod Loader does not bundle or redistribute those files.
+
+The bootstrap installer is small, but CurseForge downloads the full modpack afterward. Make Me Ready requires at least 5 GiB free before beginning, and the finished profile may need more as the pack changes.
+
+Manifests identify the target game with `game: "7dtd"`, `game: "repo"`, or `game: "minecraft"`. The built-in server directory includes separate rows for each game.
 
 ## Hosting Mod Packs
 

@@ -3,7 +3,7 @@ const fsp = require("node:fs/promises");
 const path = require("node:path");
 
 const GAME_ID = "7dtd";
-const SUPPORTED_GAME_IDS = new Set(["7dtd", "repo"]);
+const SUPPORTED_GAME_IDS = new Set(["7dtd", "repo", "minecraft"]);
 const MANIFEST_VERSION = 1;
 const CLIENT_BLOCKED_SERVER_ONLY_MOD_NAMES = new Set([
   "allocs_commandextensions",

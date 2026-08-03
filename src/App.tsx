@@ -65,8 +65,12 @@ const gameDefinitions: Record<GameId, {
   folderPlaceholder: string;
   defaultServerId: string;
   supportsEac: boolean;
+  supportsCopy: boolean;
   copyName: string;
   modsLabel: string;
+  modsRelativePath: string;
+  versionManager: string;
+  versionIdLabel: string;
 }> = {
   "7dtd": {
     id: "7dtd",
@@ -75,8 +79,12 @@ const gameDefinitions: Record<GameId, {
     folderPlaceholder: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\7 Days To Die",
     defaultServerId: "gdg-test",
     supportsEac: true,
+    supportsCopy: true,
     copyName: "7 Days To Die - GDG",
-    modsLabel: "Mods"
+    modsLabel: "Mods",
+    modsRelativePath: "Mods",
+    versionManager: "Steam",
+    versionIdLabel: "Steam build"
   },
   repo: {
     id: "repo",
@@ -85,8 +93,26 @@ const gameDefinitions: Record<GameId, {
     folderPlaceholder: "C:\\Program Files (x86)\\Steam\\steamapps\\common\\REPO",
     defaultServerId: "gdg-repo",
     supportsEac: false,
+    supportsCopy: true,
     copyName: "R.E.P.O. - GDG",
-    modsLabel: "BepInEx plugins"
+    modsLabel: "BepInEx plugins",
+    modsRelativePath: "BepInEx\\plugins",
+    versionManager: "Steam",
+    versionIdLabel: "Steam build"
+  },
+  minecraft: {
+    id: "minecraft",
+    name: "Minecraft Java",
+    shortName: "Minecraft",
+    folderPlaceholder: "%USERPROFILE%\\curseforge\\minecraft\\Instances\\SUPERIOR - RPG",
+    defaultServerId: "gdg-minecraft-superior",
+    supportsEac: false,
+    supportsCopy: false,
+    copyName: "",
+    modsLabel: "launcher-managed mods",
+    modsRelativePath: "mods",
+    versionManager: "Minecraft launcher",
+    versionIdLabel: "CurseForge file"
   }
 };
 const gameOptions = Object.values(gameDefinitions);
@@ -450,7 +476,9 @@ function App() {
   }, [config.lastServerId, serverDirectory]);
   const installProfile = useMemo(() => getInstallProfile(config.gamePath, detected?.path), [config.gamePath, detected?.path]);
   const showSetupChoices = Boolean(!config.gamePath && !setupDismissed && (detected?.found || guidedSetupOpen));
-  const detectedSetupLabel = detected?.isGdgCopy ? "Detected GDG copy" : "Detected game";
+  const detectedSetupLabel = config.gameId === "minecraft"
+    ? "Detected Minecraft instance"
+    : detected?.isGdgCopy ? "Detected GDG copy" : "Detected game";
 
   async function initialize() {
     await runTask("Loading", async () => {
@@ -696,7 +724,7 @@ function App() {
       if (!result.found) {
         await updateGamePath("");
         setGuidedSetupOpen(true);
-        return "Choose game folder";
+        return config.gameId === "minecraft" ? "Choose Minecraft setup" : "Choose game folder";
       }
 
       setGuidedSetupOpen(true);
@@ -736,6 +764,36 @@ function App() {
 
   async function useDetectedInstallAndContinue() {
     await selectDetectedInstall(true);
+  }
+
+  async function provisionMinecraftAndContinue() {
+    if (config.gameId !== "minecraft") {
+      return;
+    }
+
+    setSyncProgress({
+      phase: "preparing",
+      message: "Preparing the complete CurseForge Minecraft profile.",
+      current: 0,
+      total: 3,
+      percent: 0
+    });
+    await runTask("Setting up Minecraft", async () => {
+      const result = await window.gdg.provisionMinecraft({ gameId: "minecraft" });
+      const nextDetected: DetectedGame = {
+        found: true,
+        gameId: "minecraft",
+        name: selectedGame.name,
+        path: result.instancePath,
+        modsPath: result.modsPath,
+        isGdgCopy: result.managed
+      };
+      setDetected(nextDetected);
+      const saved = await updateGamePath(result.instancePath);
+      setGuidedSetupOpen(false);
+      await continueGuidedFlow(saved.gamePath, saved.manifestInput, { forceCheck: true });
+      return result.created ? "GDG Minecraft instance ready" : "Existing Superior instance selected";
+    });
   }
 
   async function selectDetectedInstall(continueGuided: boolean) {
@@ -846,7 +904,7 @@ function App() {
       setActiveTab("sync");
 
       if (!result.found) {
-        return "Choose game folder";
+        return config.gameId === "minecraft" ? "Choose Minecraft setup" : "Choose game folder";
       }
     });
   }
@@ -943,13 +1001,13 @@ function App() {
       if (result.gameCompatibility.checked && !result.gameCompatibility.ok) {
         const promptKey = `${effectiveGamePath}|${effectiveManifestInput}|${result.gameCompatibility.reason}`;
         setOpenStep("check");
-        setError(`${result.gameCompatibility.reason} Match ${selectedGame.name} to the server version in Steam before installing GDG mods.`);
+        setError(`${result.gameCompatibility.reason} Match ${selectedGame.name} to the server version in ${selectedGame.versionManager} before continuing.`);
         setMessage("Game version mismatch");
 
         if (options.promptSteam !== false && lastVersionPromptKey.current !== promptKey) {
           lastVersionPromptKey.current = promptKey;
           window.setTimeout(() => {
-            const shouldOpenSteam = window.confirm(`${result.gameCompatibility.reason}\n\nOpen ${selectedGame.name} in Steam now so you can switch to the server version?`);
+            const shouldOpenSteam = window.confirm(`${result.gameCompatibility.reason}\n\nOpen ${selectedGame.versionManager} now so you can switch to the required version?`);
             if (shouldOpenSteam) {
               void openSteamUpdate();
             }
@@ -1383,7 +1441,7 @@ function App() {
 
   async function launchGame() {
     if (gameVersionMismatch) {
-      setError(`Match ${selectedGame.name} to the server version in Steam before launching this GDG modpack.`);
+      setError(`Match ${selectedGame.name} to the server version in ${selectedGame.versionManager} before launching this GDG modpack.`);
       setOpenStep("check");
       return;
     }
@@ -1402,7 +1460,10 @@ function App() {
       const result = await window.gdg.launchGame({
         gameId: config.gameId,
         gamePath: config.gamePath,
-        eacEnabled: launchWithEac
+        eacEnabled: launchWithEac,
+        serverAddress: selectedServer?.host
+          ? `${selectedServer.host}${selectedServer.gamePort && selectedServer.gamePort !== 25565 ? `:${selectedServer.gamePort}` : ""}`
+          : undefined
       });
       setMessage(selectedGame.supportsEac ? (result.eacEnabled ? "Launched with EAC" : "Launched with EAC off") : `${selectedGame.name} launched`);
     } catch (launchError) {
@@ -1418,15 +1479,18 @@ function App() {
     if (scan?.modsPath) {
       await window.gdg.openPath(scan.modsPath);
     } else if (config.gamePath) {
-      await window.gdg.openPath(config.gameId === "repo" ? `${config.gamePath}\\BepInEx\\plugins` : `${config.gamePath}\\Mods`);
+      await window.gdg.openPath(`${config.gamePath}\\${selectedGame.modsRelativePath}`);
     }
   }
 
   async function openSteamUpdate() {
-    await runTask("Opening Steam", async () => {
+    await runTask(`Opening ${selectedGame.versionManager}`, async () => {
       const result = await window.gdg.openSteamUpdate();
       if (!result.ok) {
-        throw new Error(result.error || "Steam could not be opened.");
+        throw new Error(result.error || `${selectedGame.versionManager} could not be opened.`);
+      }
+      if (result.target === "launcher") {
+        return `Minecraft launcher opened. Update or repair the Superior instance, then check the server pack again.`;
       }
       return result.target === "web"
         ? `Steam page opened. Update ${selectedGame.name}, then check server mods again.`
@@ -1506,6 +1570,7 @@ function App() {
 
   const working = Boolean(busy);
   const selectedHealth = selectedServer ? serverHealth[selectedServer.id] : null;
+  const modsManagedExternally = selectedServer?.modManager === "prism" || selectedServer?.modManager === "curseforge";
   const selectedServerName = selectedServer?.name || preview?.manifest.server.name || "Golden Days Gaming";
   const showingSupportProgress = Boolean(syncProgress && isSupportBundleProgress(syncProgress));
   const serverEacEnabled = selectedGame.supportsEac
@@ -1528,17 +1593,17 @@ function App() {
           : "Unknown";
   const localGameVersionWithBuild =
     mappedLocalGameVersion && gameVersion?.steamBuildId
-      ? `${mappedLocalGameVersion} (Steam build ${gameVersion.steamBuildId})`
+      ? `${mappedLocalGameVersion} (${selectedGame.versionIdLabel} ${gameVersion.steamBuildId})`
       : gameVersion?.steamBuildId
-        ? `Steam build ${gameVersion.steamBuildId}`
+        ? `${selectedGame.versionIdLabel} ${gameVersion.steamBuildId}`
         : "";
   const serverGameVersionWithBuild =
     requiredGameVersion && requiredSteamBuildId
-      ? `${requiredGameVersion} (Steam build ${requiredSteamBuildId})`
+      ? `${requiredGameVersion} (${selectedGame.versionIdLabel} ${requiredSteamBuildId})`
       : requiredGameVersion
         ? requiredGameVersion
         : requiredSteamBuildId
-          ? `Steam build ${requiredSteamBuildId}`
+          ? `${selectedGame.versionIdLabel} ${requiredSteamBuildId}`
           : "";
   const localVersionStatus =
     localBuildMatchesServer && requiredGameVersion
@@ -1546,8 +1611,8 @@ function App() {
       : mappedLocalGameVersion && gameVersion?.steamBuildId
         ? `This PC has ${localGameVersionWithBuild}.`
         : gameVersion?.steamBuildId
-          ? `This PC has Steam build ${gameVersion.steamBuildId}.`
-          : "Steam build not detected for this folder.";
+          ? `This PC has ${selectedGame.versionIdLabel.toLowerCase()} ${gameVersion.steamBuildId}.`
+          : `${selectedGame.versionIdLabel} not detected for this folder.`;
   const gameCompatibility = preview?.gameCompatibility || null;
   const gameVersionMismatch = Boolean(gameCompatibility?.checked && !gameCompatibility.ok);
   const gameVersionKnown = Boolean(gameVersion?.steamBuildId);
@@ -1571,7 +1636,7 @@ function App() {
   const launchHint = !scanMatchesGame
     ? "Checking installed mods for DLL files."
     : gameVersionMismatch
-      ? `Match ${selectedGame.name} to the server version in Steam before launching.`
+      ? `Match ${selectedGame.name} to the server version in ${selectedGame.versionManager} before launching.`
     : eacMismatch
       ? `Server EAC is ${serverEacEnabled ? "on" : "off"}. Match this before launching.`
     : selectedGame.supportsEac && hasDllMods
@@ -1634,7 +1699,7 @@ function App() {
   const showManagedCleanupActions = Boolean(preview && managedExtraMods > 0);
   const showInstallMissingAction = Boolean(preview && modsToInstall > 0 && !gameVersionMismatch && !installBlockedByServer && !syncSpaceBlocked);
   const showLaunchStepAction = Boolean(preview && modsToInstall === 0 && localOnlyMods === 0 && managedExtraMods === 0 && !installBlockedByServer && !gameVersionMismatch);
-  const showRepairActions = Boolean(advancedMode && preview && modsToInstall === 0 && repairableMods > 0 && !gameVersionMismatch && !installBlockedByServer && !repairSpaceBlocked);
+  const showRepairActions = Boolean(!modsManagedExternally && advancedMode && preview && modsToInstall === 0 && repairableMods > 0 && !gameVersionMismatch && !installBlockedByServer && !repairSpaceBlocked);
   const cleanupMode = cleanupPreference === "delete" ? "delete" : "backup";
   const cleanupPrimaryLabel = cleanupMode === "delete" ? "Remove Local-Only" : "Move to Backup";
   const cleanupSecondaryLabel = cleanupMode === "delete" ? "Move to Backup" : "Remove Instead";
@@ -1658,10 +1723,12 @@ function App() {
         }
       : {
           tone: "gold",
-          title: `Next up: find ${selectedGame.name}`,
-          detail: "GDG needs the local game folder before it can compare mods.",
-          label: "Detect Game",
-          icon: <Search size={18} />,
+          title: config.gameId === "minecraft" ? "Next up: create your Minecraft instance" : `Next up: find ${selectedGame.name}`,
+          detail: config.gameId === "minecraft"
+            ? "GDG can install a verified launcher and prepare the Superior pack for you."
+            : "GDG needs the local game folder before it can compare mods.",
+          label: config.gameId === "minecraft" ? "Set Up Minecraft" : "Detect Game",
+          icon: config.gameId === "minecraft" ? <Download size={18} /> : <Search size={18} />,
           onClick: startGuidedSetup,
           disabled: working
         }
@@ -1690,11 +1757,11 @@ function App() {
           ? {
               tone: "warn",
               title: "Next up: match game version",
-              detail: "Steam must install the same game version this GDG server is running.",
-              label: "Open Steam",
+              detail: `${selectedGame.versionManager} must provide the same game or pack version this GDG server is running.`,
+              label: `Open ${selectedGame.versionManager}`,
               icon: <RefreshCw size={18} />,
               onClick: openSteamUpdate,
-              previewText: `Steam will open so you can choose the ${selectedGame.name} branch/version required by this server.`,
+              previewText: `${selectedGame.versionManager} will open so you can choose the version required by this server.`,
               disabled: working
             }
           : syncSpaceBlocked
@@ -1853,7 +1920,7 @@ function App() {
       tone: "warn",
       title: "Game version mismatch",
       detail: gameCompatibility?.reason || "Your game version does not match this server.",
-      label: "Open Steam",
+      label: `Open ${selectedGame.versionManager}`,
       icon: <RefreshCw size={18} />,
       onClick: openSteamUpdate,
       disabled: working
@@ -2187,6 +2254,7 @@ function App() {
                   onCreateShortcutChange={setCreateShortcut}
                   onUseExisting={useDetectedInstallAndContinue}
                   onCreateCopy={createGdgCopyAndContinue}
+                  onProvisionMinecraft={provisionMinecraftAndContinue}
                   onBrowse={browseGameFolderAndContinue}
                   onDecline={declineGameSetup}
                   disabled={working}
@@ -2236,7 +2304,9 @@ function App() {
                 >
                   <div className="step-body">
                     <p className="step-copy">
-                      GDG can keep vanilla untouched by making a separate copy, or it can install mods into your existing {selectedGame.name} folder.
+                      {selectedGame.supportsCopy
+                        ? <>GDG can keep vanilla untouched by making a separate copy, or it can install mods into your existing {selectedGame.name} folder.</>
+                        : <>GDG can prepare a complete Superior profile through the official CurseForge standalone app, or use a compatible CurseForge or Prism instance already on this PC.</>}
                     </p>
 
                     {config.gamePath && (
@@ -2281,6 +2351,7 @@ function App() {
                         onCreateShortcutChange={setCreateShortcut}
                         onUseExisting={useDetectedInstall}
                         onCreateCopy={createGdgCopy}
+                        onProvisionMinecraft={provisionMinecraftAndContinue}
                         onBrowse={browseGameFolder}
                         onDecline={declineGameSetup}
                         disabled={working}
@@ -2328,7 +2399,9 @@ function App() {
                         <strong>{selectedHealth?.ok ? "Sync available" : "Sync not confirmed"}</strong>
                         <span>
                           {selectedHealth?.ok
-                            ? `${selectedHealth.modCount} client-safe mods - ${formatKnownBytes(selectedHealth.installedBytes, selectedHealth.installedSizeKnown)}${selectedHealth.generatedAt ? ` - updated ${formatDate(selectedHealth.generatedAt)}` : ""}`
+                            ? selectedServer.modManager === "prism" || selectedServer.modManager === "curseforge"
+                              ? `Pack managed by the Minecraft launcher${selectedHealth.generatedAt ? ` - profile updated ${formatDate(selectedHealth.generatedAt)}` : ""}`
+                              : `${selectedHealth.modCount} client-safe mods - ${formatKnownBytes(selectedHealth.installedBytes, selectedHealth.installedSizeKnown)}${selectedHealth.generatedAt ? ` - updated ${formatDate(selectedHealth.generatedAt)}` : ""}`
                             : selectedHealth?.error || "Refresh server status"}
                         </span>
                       </div>
@@ -2343,9 +2416,9 @@ function App() {
                             {gameVersionMismatch
                               ? gameCompatibility?.reason
                               : requiredGameVersion
-                                ? `Server expects ${requiredGameVersion}${requiredSteamBuildId ? ` / Steam build ${requiredSteamBuildId}` : ""}.`
+                                ? `Server expects ${requiredGameVersion}${requiredSteamBuildId ? ` / ${selectedGame.versionIdLabel} ${requiredSteamBuildId}` : ""}.`
                                 : requiredSteamBuildId
-                                  ? `Server expects Steam build ${requiredSteamBuildId}.`
+                                  ? `Server expects ${selectedGame.versionIdLabel} ${requiredSteamBuildId}.`
                                   : "Server has not published a required game version yet."}
                           </small>
                           <small>{localVersionStatus}</small>
@@ -2353,10 +2426,10 @@ function App() {
                         {gameVersionMismatch && (
                           <button className="secondary slim" type="button" onClick={openSteamUpdate} disabled={working}>
                             <RefreshCw size={16} />
-                            Open Steam
+                            Open {selectedGame.versionManager}
                           </button>
                         )}
-                        {gameVersionMismatch && (
+                        {gameVersionMismatch && selectedGame.versionManager === "Steam" && (
                           <button className="secondary slim" type="button" onClick={() => void previewSync()} disabled={working || !config.gamePath || !config.manifestInput}>
                             <ListChecks size={16} />
                             Retry
@@ -2535,7 +2608,7 @@ function App() {
                         <>
                           <button className="secondary" type="button" onClick={openSteamUpdate} disabled={working}>
                             <RefreshCw size={17} />
-                            Open Steam
+                            Open {selectedGame.versionManager}
                           </button>
                           <button className="secondary" type="button" onClick={() => void previewSync()} disabled={working || !config.gamePath || !config.manifestInput}>
                             <ListChecks size={17} />
@@ -2789,22 +2862,26 @@ function App() {
                   <RefreshCw size={16} />
                   Scan
                 </button>
-                <button className="secondary slim" type="button" onClick={() => void purgeModsFolder("backup")} disabled={working || !config.gamePath}>
-                  <HardDrive size={16} />
-                  Backup Mods
-                </button>
-                <button className="secondary danger slim" type="button" onClick={() => void purgeModsFolder("delete")} disabled={working || !config.gamePath}>
-                  <Trash2 size={16} />
-                  Delete Mods
-                </button>
-                <button className="secondary slim" type="button" onClick={() => void cleanManagedMods("backup", "all")} disabled={working || !config.gamePath || managedOrServerOnlyMods === 0}>
-                  <HardDrive size={16} />
-                  Backup Managed
-                </button>
-                <button className="secondary danger slim" type="button" onClick={() => void cleanManagedMods("delete", "all")} disabled={working || !config.gamePath || managedOrServerOnlyMods === 0}>
-                  <Trash2 size={16} />
-                  Delete Managed
-                </button>
+                {!modsManagedExternally && (
+                  <>
+                    <button className="secondary slim" type="button" onClick={() => void purgeModsFolder("backup")} disabled={working || !config.gamePath}>
+                      <HardDrive size={16} />
+                      Backup Mods
+                    </button>
+                    <button className="secondary danger slim" type="button" onClick={() => void purgeModsFolder("delete")} disabled={working || !config.gamePath}>
+                      <Trash2 size={16} />
+                      Delete Mods
+                    </button>
+                    <button className="secondary slim" type="button" onClick={() => void cleanManagedMods("backup", "all")} disabled={working || !config.gamePath || managedOrServerOnlyMods === 0}>
+                      <HardDrive size={16} />
+                      Backup Managed
+                    </button>
+                    <button className="secondary danger slim" type="button" onClick={() => void cleanManagedMods("delete", "all")} disabled={working || !config.gamePath || managedOrServerOnlyMods === 0}>
+                      <Trash2 size={16} />
+                      Delete Managed
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
@@ -2904,9 +2981,9 @@ function App() {
               <SettingItem label="Install type" value={installProfile.label} />
               <SettingItem label="Saved game folder" value={config.gamePath || "Not set"} />
               <SettingItem label="Local game version" value={localGameVersionLabel} />
-              <SettingItem label="Local Steam build" value={gameVersion?.steamBuildId || "Unknown"} />
+              <SettingItem label={`Local ${selectedGame.versionIdLabel}`} value={gameVersion?.steamBuildId || "Unknown"} />
               <SettingItem label="Server game version" value={requiredGameVersion || "Not published"} />
-              <SettingItem label="Server Steam build" value={requiredSteamBuildId || "Not published"} />
+              <SettingItem label={`Server ${selectedGame.versionIdLabel}`} value={requiredSteamBuildId || "Not published"} />
               {selectedGame.supportsEac && <SettingItem label="Server EAC" value={serverEacLabel} />}
               {selectedGame.supportsEac && <SettingItem label="Launch EAC" value={config.launchWithEac ? "On" : "Off"} />}
               <SettingItem label="DLL mod warning" value={hasDllMods ? `${dllMods.length} mod${dllMods.length === 1 ? "" : "s"} detected` : scanMatchesGame ? "No DLL mods detected" : "Checking"} />
@@ -2996,6 +3073,7 @@ function SetupChoicePanel({
   onCreateShortcutChange,
   onUseExisting,
   onCreateCopy,
+  onProvisionMinecraft,
   onBrowse,
   onDecline,
   disabled
@@ -3007,6 +3085,7 @@ function SetupChoicePanel({
   onCreateShortcutChange: (value: boolean) => void;
   onUseExisting: () => void | Promise<void>;
   onCreateCopy: () => void | Promise<void>;
+  onProvisionMinecraft: () => void | Promise<void>;
   onBrowse: () => void | Promise<void>;
   onDecline: () => void | Promise<void>;
   disabled: boolean;
@@ -3015,18 +3094,24 @@ function SetupChoicePanel({
   const browseLabel = hasDetectedGame ? "Browse different folder" : "Choose game folder";
   const browseHelp = hasDetectedGame
     ? `Choose a specific ${game.name} folder on this PC.`
-    : `Browse to the folder that contains ${game.id === "repo" ? "REPO.exe" : "7DaysToDie.exe"}.`;
+    : game.id === "minecraft"
+      ? "Browse to a CurseForge instance containing minecraftinstance.json, or a Prism instance containing instance.cfg and mmc-pack.json."
+      : `Browse to the folder that contains ${game.id === "repo" ? "REPO.exe" : "7DaysToDie.exe"}.`;
 
   return (
     <div className="setup-panel">
       <div className="setup-heading">
         <div>
           <span className="section-label">Game Setup</span>
-          <strong>{hasDetectedGame ? `Choose how GDG should prepare ${game.name}.` : `Choose your ${game.name} folder.`}</strong>
+          <strong>{hasDetectedGame ? `Choose how GDG should prepare ${game.name}.` : game.id === "minecraft" ? "Set up Minecraft for Golden Days." : `Choose your ${game.name} folder.`}</strong>
           <p>
             {hasDetectedGame
-              ? `A GDG copy is safest for most players. It creates a separate folder beside the detected game and starts with clean ${game.modsLabel}.`
-              : "GDG could not find the game automatically. Pick the folder you want Make Me Ready to prepare."}
+              ? game.supportsCopy
+                ? `A GDG copy is safest for most players. It creates a separate folder beside the detected game and starts with clean ${game.modsLabel}.`
+                : `GDG found a compatible Minecraft instance. Use it directly so its launcher remains responsible for pack files and updates.`
+              : game.id === "minecraft"
+                ? "GDG can install the signed CurseForge standalone app, request the exact Superior profile through CurseForge, verify every formerly blocked file, and add only GDG Quick Join."
+                : "GDG could not find the game automatically. Pick the folder you want Make Me Ready to prepare."}
           </p>
           {hasDetectedGame && <small>{detectedSetupLabel}: {detected?.path}</small>}
           {detected?.isGdgCopy && <small>This already looks like a GDG copy. Browse for your Steam install if you want to overwrite vanilla.</small>}
@@ -3039,22 +3124,35 @@ function SetupChoicePanel({
             <button className="setup-option overwrite" type="button" onClick={() => void onUseExisting()} disabled={disabled}>
               <AlertTriangle size={20} />
               <span>
-                <strong>{detected?.isGdgCopy ? "Use detected GDG copy" : "Use existing game"}</strong>
+                <strong>{game.id === "minecraft" ? "Use detected Superior instance" : detected?.isGdgCopy ? "Use detected GDG copy" : "Use existing game"}</strong>
                 <small>
-                  {detected?.isGdgCopy
+                  {game.id === "minecraft"
+                    ? "Use the detected Superior instance and let CurseForge or Prism continue managing its pack files."
+                    : detected?.isGdgCopy
                     ? "Select the detected modded copy. This will not point at your vanilla Steam folder."
                     : `Use your current ${game.name} folder. GDG mods will be installed into this game.`}
                 </small>
               </span>
             </button>
-            <button className="setup-option copy" type="button" onClick={() => void onCreateCopy()} disabled={disabled}>
-              <Copy size={20} />
-              <span>
-                <strong>Create GDG copy <em>Recommended</em></strong>
-                <small>Make a separate folder named {game.copyName} with clean {game.modsLabel}.</small>
-              </span>
-            </button>
+            {game.supportsCopy && (
+              <button className="setup-option copy" type="button" onClick={() => void onCreateCopy()} disabled={disabled}>
+                <Copy size={20} />
+                <span>
+                  <strong>Create GDG copy <em>Recommended</em></strong>
+                  <small>Make a separate folder named {game.copyName} with clean {game.modsLabel}.</small>
+                </span>
+              </button>
+            )}
           </>
+        )}
+        {!hasDetectedGame && game.id === "minecraft" && (
+          <button className="setup-option copy" type="button" onClick={() => void onProvisionMinecraft()} disabled={disabled}>
+            <Download size={20} />
+            <span>
+              <strong>Create CurseForge profile <em>Recommended</em></strong>
+              <small>Install the signed CurseForge standalone app if needed, then let CurseForge build the complete Superior profile—including files other launchers cannot download automatically. Sign in to Microsoft before first play.</small>
+            </span>
+          </button>
         )}
         <button className="setup-option browse" type="button" onClick={() => void onBrowse()} disabled={disabled}>
           <FolderOpen size={20} />
@@ -3072,7 +3170,7 @@ function SetupChoicePanel({
         </button>
       </div>
 
-      {hasDetectedGame && (
+      {hasDetectedGame && game.supportsCopy && (
         <label className="shortcut-toggle">
           <input type="checkbox" checked={createShortcut} onChange={(event) => onCreateShortcutChange(event.target.checked)} />
           <span>Create desktop shortcut for the GDG copy</span>
