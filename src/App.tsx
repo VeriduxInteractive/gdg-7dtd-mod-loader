@@ -104,7 +104,7 @@ const gameDefinitions: Record<GameId, {
     id: "minecraft",
     name: "Minecraft Java",
     shortName: "Minecraft",
-    folderPlaceholder: "%USERPROFILE%\\curseforge\\minecraft\\Instances\\SUPERIOR - RPG",
+    folderPlaceholder: "%USERPROFILE%\\curseforge\\minecraft\\Instances\\FTB Presents Stoneblock 2",
     defaultServerId: "gdg-minecraft-superior",
     supportsEac: false,
     supportsCopy: false,
@@ -780,6 +780,10 @@ function App() {
     });
     await runTask("Setting up Minecraft", async () => {
       const result = await window.gdg.provisionMinecraft({ gameId: "minecraft" });
+      if (result.canceled) {
+        setSyncProgress(null);
+        return "Minecraft setup canceled";
+      }
       const nextDetected: DetectedGame = {
         found: true,
         gameId: "minecraft",
@@ -792,7 +796,10 @@ function App() {
       const saved = await updateGamePath(result.instancePath);
       setGuidedSetupOpen(false);
       await continueGuidedFlow(saved.gamePath, saved.manifestInput, { forceCheck: true });
-      return result.created ? "GDG Minecraft instance ready" : "Existing Superior instance selected";
+      const cleanupMessage = result.recycledInstances?.length
+        ? `; moved ${result.recycledInstances.length} old GDG instance${result.recycledInstances.length === 1 ? "" : "s"} to the Recycle Bin`
+        : "";
+      return `${result.created ? "Stoneblock 2 installed and verified" : "Existing Stoneblock 2 instance selected"}${cleanupMessage}`;
     });
   }
 
@@ -1490,7 +1497,7 @@ function App() {
         throw new Error(result.error || `${selectedGame.versionManager} could not be opened.`);
       }
       if (result.target === "launcher") {
-        return `Minecraft launcher opened. Update or repair the Superior instance, then check the server pack again.`;
+        return `Minecraft launcher opened. Update or repair the Stoneblock 2 instance, then check the server pack again.`;
       }
       return result.target === "web"
         ? `Steam page opened. Update ${selectedGame.name}, then check server mods again.`
@@ -1725,7 +1732,7 @@ function App() {
           tone: "gold",
           title: config.gameId === "minecraft" ? "Next up: create your Minecraft instance" : `Next up: find ${selectedGame.name}`,
           detail: config.gameId === "minecraft"
-            ? "GDG can install a verified launcher and prepare the Superior pack for you."
+            ? "GDG can reuse or install CurseForge and prepare the exact Stoneblock 2 pack for you."
             : "GDG needs the local game folder before it can compare mods.",
           label: config.gameId === "minecraft" ? "Set Up Minecraft" : "Detect Game",
           icon: config.gameId === "minecraft" ? <Download size={18} /> : <Search size={18} />,
@@ -2306,7 +2313,7 @@ function App() {
                     <p className="step-copy">
                       {selectedGame.supportsCopy
                         ? <>GDG can keep vanilla untouched by making a separate copy, or it can install mods into your existing {selectedGame.name} folder.</>
-                        : <>GDG can prepare a complete Superior profile through the official CurseForge standalone app, or use a compatible CurseForge or Prism instance already on this PC.</>}
+                        : <>GDG can reuse an existing CurseForge installation or install the official standalone app, then prepare and verify the exact Stoneblock 2 profile.</>}
                     </p>
 
                     {config.gamePath && (
@@ -3110,7 +3117,7 @@ function SetupChoicePanel({
                 ? `A GDG copy is safest for most players. It creates a separate folder beside the detected game and starts with clean ${game.modsLabel}.`
                 : `GDG found a compatible Minecraft instance. Use it directly so its launcher remains responsible for pack files and updates.`
               : game.id === "minecraft"
-                ? "GDG can install the signed CurseForge standalone app, request the exact Superior profile through CurseForge, verify every formerly blocked file, and add only GDG Quick Join."
+                ? "GDG first checks for an existing CurseForge installation, installs the signed standalone app only when needed, requests the exact Stoneblock 2 profile, and waits until CurseForge has fully installed and validated it."
                 : "GDG could not find the game automatically. Pick the folder you want Make Me Ready to prepare."}
           </p>
           {hasDetectedGame && <small>{detectedSetupLabel}: {detected?.path}</small>}
@@ -3124,10 +3131,10 @@ function SetupChoicePanel({
             <button className="setup-option overwrite" type="button" onClick={() => void onUseExisting()} disabled={disabled}>
               <AlertTriangle size={20} />
               <span>
-                <strong>{game.id === "minecraft" ? "Use detected Superior instance" : detected?.isGdgCopy ? "Use detected GDG copy" : "Use existing game"}</strong>
+                <strong>{game.id === "minecraft" ? "Use detected Stoneblock 2 instance" : detected?.isGdgCopy ? "Use detected GDG copy" : "Use existing game"}</strong>
                 <small>
                   {game.id === "minecraft"
-                    ? "Use the detected Superior instance and let CurseForge or Prism continue managing its pack files."
+                    ? "Use the detected Stoneblock 2 instance and let CurseForge or Prism continue managing its pack files."
                     : detected?.isGdgCopy
                     ? "Select the detected modded copy. This will not point at your vanilla Steam folder."
                     : `Use your current ${game.name} folder. GDG mods will be installed into this game.`}
@@ -3150,7 +3157,7 @@ function SetupChoicePanel({
             <Download size={20} />
             <span>
               <strong>Create CurseForge profile <em>Recommended</em></strong>
-              <small>Install the signed CurseForge standalone app if needed, then let CurseForge build the complete Superior profile—including files other launchers cannot download automatically. Sign in to Microsoft before first play.</small>
+              <small>Reuse CurseForge if it is already installed, or install the signed standalone app if needed. GDG opens the exact Stoneblock 2 release and waits for account setup and all pack files before reporting readiness.</small>
             </span>
           </button>
         )}

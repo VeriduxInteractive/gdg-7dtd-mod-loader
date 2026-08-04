@@ -292,8 +292,9 @@ export type GdgApi = {
   getInitialState: () => Promise<{ config: LoaderConfig; detected: DetectedGame }>;
   saveConfig: (config: Partial<LoaderConfig>) => Promise<LoaderConfig>;
   detectGame: (payload?: { gameId?: GameId }) => Promise<DetectedGame>;
-  provisionMinecraft: (payload?: { gameId?: "minecraft" }) => Promise<{
+  provisionMinecraft: (payload?: { gameId?: "minecraft" }) => Promise<{ ok: false; canceled: true } | {
     ok: boolean;
+    canceled?: false;
     created: boolean;
     instancePath: string;
     modsPath: string;
@@ -303,6 +304,7 @@ export type GdgApi = {
     dataRoot?: string;
     sourcePage?: string;
     licenseUrl?: string;
+    recycledInstances?: string[];
   }>;
   selectGameFolder: () => Promise<{ canceled: true } | { canceled: false; path: string; valid: boolean }>;
   selectManifestFile: () => Promise<{ canceled: true } | { canceled: false; path: string }>;

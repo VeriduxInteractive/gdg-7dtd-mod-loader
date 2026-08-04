@@ -4,14 +4,17 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 describe("GDG Minecraft Quick Join addon", () => {
-  it("builds a client-only Forge addon with the required metadata", async () => {
+  it("builds a client-only Forge 1.12.2 addon with the required metadata", async () => {
     const jarPath = fileURLToPath(new URL("../server-directory/addons/GDG-Quick-Join.jar", import.meta.url));
     const zip = new AdmZip(jarPath);
-    const modsToml = zip.readAsText("META-INF/mods.toml");
+    const metadata = zip.readAsText("mcmod.info");
+    const packMetadata = JSON.parse(zip.readAsText("pack.mcmeta"));
 
-    expect(modsToml).toContain('modId="gdgquickjoin"');
-    expect(modsToml).toContain('version="0.1.0"');
-    expect(modsToml).toContain('side="CLIENT"');
+    expect(metadata).toContain('"modid": "gdgquickjoin"');
+    expect(metadata).toContain('"version": "0.2.0"');
+    expect(metadata).toContain('"mcversion": "1.12.2"');
+    expect(packMetadata.pack.pack_format).toBe(3);
+    expect(zip.getEntry("META-INF/mods.toml")).toBeNull();
     expect(zip.getEntry("com/goldendaysgaming/minecraft/GdgQuickJoin.class")).toBeTruthy();
   });
 
@@ -21,9 +24,13 @@ describe("GDG Minecraft Quick Join addon", () => {
       "utf8"
     );
 
-    expect(source).toContain("ScreenEvent.Init.Post");
-    expect(source).toContain("ServerStatusPinger");
-    expect(source).toContain("ConnectScreen.startConnecting");
+    expect(source).toContain("GuiScreenEvent.InitGuiEvent.Post");
+    expect(source).toContain("ServerPinger");
+    expect(source).toContain("FMLClientHandler.instance().connectToServer");
+    expect(source).toContain('acceptedMinecraftVersions = "[1.12.2]"');
+    expect(source).toContain('acceptableRemoteVersions = "*"');
+    expect(source).toContain("clientSideOnly = true");
+    expect(source).toContain('"lumien.custommainmenu.gui.GuiCustom"');
     expect(source).toContain('"goldendays.mcsh.io:25565"');
     expect(source).toContain('resolve("gdg-quick-join.json")');
   });

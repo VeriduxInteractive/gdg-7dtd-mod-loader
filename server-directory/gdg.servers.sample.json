@@ -5,13 +5,13 @@
     {
       "id": "gdg-minecraft-superior",
       "game": "minecraft",
-      "name": "Golden Days | Superior RPG 1.8.3",
-      "description": "Public Minecraft Java server using the CurseForge-managed Superior RPG 1.8.3 pack",
+      "name": "Golden Days | FTB Presents Stoneblock 2",
+      "description": "Public Minecraft Java server using the CurseForge-managed FTB Presents Stoneblock 2 1.16.1 pack",
       "host": "goldendays.mcsh.io",
       "gamePort": 25565,
-      "syncUrl": "bundled://minecraft-superior-1.8.3.json",
+      "syncUrl": "bundled://minecraft-stoneblock2-1.16.1.json",
       "modManager": "curseforge",
-      "packUrl": "https://www.curseforge.com/minecraft/modpacks/superior-the-greatest-rpg-modpack-ever-made/files/8348938",
+      "packUrl": "https://www.curseforge.com/minecraft/modpacks/ftb-presents-stoneblock-2/files/2818169",
       "recommended": true
     },
     {

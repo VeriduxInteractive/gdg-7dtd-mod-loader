@@ -1,6 +1,6 @@
 # GDG Minecraft Quick Join
 
-Client-only Forge 1.20.1 addon for the Golden Days Gaming Minecraft profile.
+Client-only Forge 1.12.2 addon for the Golden Days Gaming Stoneblock 2 profile.
 
 It adds an extensible Golden Days server panel to the Minecraft title screen. Each row uses Minecraft's native status ping, displays online/player state, and connects directly when selected.
 
@@ -12,4 +12,6 @@ Build and stage it for GDG Mod Loader packaging from the repository root:
 npm run minecraft:stage
 ```
 
-The addon targets Minecraft 1.20.1, Forge 47.4.20, and Java 17.
+The addon targets Minecraft 1.12.2, Forge 14.23.5.2846, and Java 8. It hooks both the vanilla title screen and Stoneblock 2's Custom Main Menu screen.
+
+The build requires a Java 8 JDK. Set `GDG_JAVA8_HOME` when Temurin 8 is not installed in the GDG build-tools directory. The staging script uses an isolated Gradle cache and skips the obsolete legacy asset-download task; no game assets are included in the addon JAR.

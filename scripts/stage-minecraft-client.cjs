@@ -8,21 +8,39 @@ const wrapperJar = path.join(projectRoot, "gradle", "wrapper", "gradle-wrapper.j
 const outputDir = path.join(projectRoot, "build", "libs");
 const stageDir = path.join(repoRoot, "server-directory", "addons");
 const stagedJar = path.join(stageDir, "GDG-Quick-Join.jar");
+const gradleUserHome = process.env.GDG_GRADLE_USER_HOME
+  || path.join(process.env.LOCALAPPDATA || repoRoot, "GoldenDaysGaming", "BuildTools", "gradle-minecraft-1.12.2");
 
 const javaCandidates = [
+  process.env.GDG_JAVA8_HOME ? path.join(process.env.GDG_JAVA8_HOME, "bin", "java.exe") : "",
+  process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "GoldenDaysGaming", "BuildTools", "temurin8-jdk8u502-b07", "jdk8u502-b07", "bin", "java.exe") : "",
   process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, "bin", "java.exe") : "",
-  process.env.APPDATA ? path.join(process.env.APPDATA, "PrismLauncher", "java", "java-runtime-gamma", "bin", "java.exe") : "",
   "java"
 ].filter(Boolean);
 
-const javaExecutable = javaCandidates.find((candidate) => candidate === "java" || fs.existsSync(candidate));
+function isJava8Jdk(candidate) {
+  if (candidate !== "java" && !fs.existsSync(candidate)) {
+    return false;
+  }
+  const version = spawnSync(candidate, ["-version"], { encoding: "utf8", windowsHide: true });
+  const versionText = `${version.stdout || ""}\n${version.stderr || ""}`;
+  if (version.status !== 0 || !/version\s+"1\.8\./.test(versionText)) {
+    return false;
+  }
+  const javac = candidate === "java" ? "javac" : path.join(path.dirname(candidate), "javac.exe");
+  const compiler = spawnSync(javac, ["-version"], { encoding: "utf8", windowsHide: true });
+  return compiler.status === 0 && /javac\s+1\.8\./.test(`${compiler.stdout || ""}\n${compiler.stderr || ""}`);
+}
+
+const javaExecutable = javaCandidates.find(isJava8Jdk);
 if (!javaExecutable) {
-  throw new Error("Java 17 was not found. Install Java 17 or let Prism Launcher provision java-runtime-gamma.");
+  throw new Error("A Java 8 JDK is required to build the Forge 1.12.2 Quick Join addon. Set GDG_JAVA8_HOME to a Temurin 8 JDK.");
 }
 
 if (!fs.existsSync(wrapperJar)) {
   throw new Error(`Gradle wrapper is missing: ${wrapperJar}`);
 }
+fs.mkdirSync(gradleUserHome, { recursive: true });
 
 const javaHome = javaExecutable === "java" ? "" : path.dirname(path.dirname(javaExecutable));
 const gradleArgs = [
@@ -31,10 +49,15 @@ const gradleArgs = [
   "-classpath",
   wrapperJar,
   "org.gradle.wrapper.GradleWrapperMain",
-  "build"
+  "clean",
+  "setupDecompWorkspace",
+  "build",
+  "-x",
+  "getAssets"
 ];
 const result = spawnSync(javaExecutable, gradleArgs, {
   cwd: projectRoot,
+  env: { ...process.env, GRADLE_USER_HOME: gradleUserHome },
   stdio: "inherit",
   windowsHide: true
 });
