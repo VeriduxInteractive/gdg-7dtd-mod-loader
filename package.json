@@ -1,6 +1,6 @@
 {
   "name": "gdg-mod-loader",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "private": true,
   "description": "Golden Days Gaming desktop mod loader for syncing supported game client mods with a server manifest.",
   "main": "electron/main.cjs",

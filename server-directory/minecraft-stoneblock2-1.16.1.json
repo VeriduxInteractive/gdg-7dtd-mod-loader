@@ -6,7 +6,7 @@
     "name": "Golden Days | FTB Presents Stoneblock 2",
     "host": "goldendays.mcsh.io",
     "port": 25565,
-    "quickJoinVersion": "0.2.0",
+    "quickJoinVersion": "0.2.1",
     "gameVersion": "Stoneblock 2 1.16.1 · Minecraft 1.12.2 · Forge 14.23.5.2846",
     "steamBuildId": "2818169",
     "gameVersionMap": {
