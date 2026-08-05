@@ -1,6 +1,6 @@
 {
   "name": "gdg-mod-loader",
-  "version": "0.1.28",
+  "version": "0.1.29",
   "private": true,
   "description": "Golden Days Gaming desktop mod loader for syncing supported game client mods with a server manifest.",
   "main": "electron/main.cjs",
@@ -41,7 +41,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "@vitest/coverage-v8": "^4.1.7",
     "concurrently": "^9.2.4",
-    "electron": "^42.0.0",
+    "electron": "^42.5.1",
     "electron-builder": "^26.15.3",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",

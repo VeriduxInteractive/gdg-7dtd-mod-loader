@@ -132,6 +132,11 @@ const GAME_PROFILES = {
         sourcePath: path.join(__dirname, "..", "server-directory", "addons", "GDG-Quick-Join.jar"),
         targetName: "GDG-Quick-Join.jar",
         ownedPrefix: "gdg-quick-join"
+      },
+      {
+        sourcePath: path.join(__dirname, "..", "server-directory", "addons", "SecurityCraft-1.10.2.1.jar"),
+        targetName: "SecurityCraft-1.10.2.1.jar",
+        ownedPrefix: "securitycraft"
       }
     ],
     launcherCandidates: () => [

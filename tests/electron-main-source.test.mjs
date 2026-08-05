@@ -41,6 +41,8 @@ describe("Electron main source", () => {
     expect(source).toContain('launchArgs.push("--server", serverAddress)');
     expect(source).toContain('trimmed.startsWith("bundled://")');
     expect(source).toContain('targetName: "GDG-Quick-Join.jar"');
+    expect(source).toContain('targetName: "SecurityCraft-1.10.2.1.jar"');
+    expect(source).toContain('ownedPrefix: "securitycraft"');
     expect(source).toMatch(/async function ensureBundledAddons\s*\(/);
     expect(source).toContain("normalized.startsWith(addon.ownedPrefix)");
     expect(source).toContain('path.basename(normalizeLocalPath(source)).toLowerCase() === "gdg.servers.local.json"');

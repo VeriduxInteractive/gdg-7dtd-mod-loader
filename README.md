@@ -15,7 +15,7 @@ The loader supports 7 Days to Die, R.E.P.O., and a CurseForge-managed Minecraft 
 - Compare the manifest against the player's local mod folder.
 - For R.E.P.O., compare and install packages under `BepInEx/plugins`.
 - For Minecraft, ask CurseForge for the exact Otherworld v8 HF2 release, wait through account onboarding and pack installation, validate the finished instance, then launch it directly into the GDG server.
-- Install and update the GDG-owned Quick Join addon, which adds live Golden Days server status and one-click joining to Minecraft's title screen.
+- Install and update the GDG-owned Quick Join addon plus the approved SecurityCraft client/server addon used for personal locks.
 - Install or update missing client-side mod packages.
 - Block server-only manifest entries from client install and track GDG-managed mods locally.
 - Repair, purge, back up, restore, or permanently delete mods from the selected install.
@@ -33,11 +33,11 @@ The desktop app currently exposes three game profiles:
 - `repo`: Steam app `3241660`, mod root `BepInEx/plugins`, package zips can contain a self-contained folder or direct plugin files that the loader installs into a managed folder.
 - `minecraft`: Otherworld v8 HF2, Minecraft `1.20.1`, Forge `47.4.20`, CurseForge project `1418133` / client file `8074976` / paired server-pack file `8074983`. Existing compatible CurseForge and Prism instances are supported. Make Me Ready checks multiple known CurseForge install paths and the registered `curseforge:` link handler before downloading anything. When installation is necessary, it downloads the official standalone installer over HTTPS, verifies its valid `Overwolf Ltd` Authenticode signature, opens the exact project/file through CurseForge, and does not report readiness until CurseForge marks the instance valid with the expected pack metadata and file counts.
 
-The Minecraft profile never alters third-party Otherworld pack mods. It manages only the GDG-owned `GDG-Quick-Join.jar` Forge 1.20.1 add-on, which attaches to Otherworld's FancyMenu-backed title screen. The add-on pings configured Golden Days servers, displays their live status, and connects when a player selects one. Its server list is stored in `config/gdg-quick-join.json`.
+The Minecraft profile never alters third-party files from the upstream Otherworld pack. It manages two separate add-ons: the GDG-owned `GDG-Quick-Join.jar` Forge 1.20.1 title-screen integration and the MIT-licensed `SecurityCraft-1.10.2.1.jar` client/server mod used for personal locks. Make Me Ready installs the exact managed SecurityCraft build and removes older loader-managed SecurityCraft JAR names before replacement. Quick Join pings configured Golden Days servers, displays their live status, and connects when a player selects one; its server list is stored in `config/gdg-quick-join.json`.
 
 When Make Me Ready finds a prior GDG Superior or Stoneblock 2 profile, it asks the player to either keep that instance and create Otherworld separately, or move the old GDG instance to the Windows Recycle Bin before continuing. Removal is separately confirmed, revalidates the known CurseForge project identity immediately before acting, and never targets unrelated Minecraft modpacks.
 
-Players complete Microsoft sign-in in CurseForge before first play. Because the pack is installed by CurseForge itself, files whose authors disable third-party distribution are obtained through the authorized first-party flow instead of sending players through Prism's manual-download pages. GDG Mod Loader does not bundle or redistribute those files.
+Players complete Microsoft sign-in in CurseForge before first play. Because the pack is installed by CurseForge itself, upstream pack files whose authors disable third-party distribution are obtained through the authorized first-party flow instead of sending players through Prism's manual-download pages. GDG Mod Loader does not bundle or redistribute those restricted pack files. SecurityCraft is a separate, explicitly managed MIT-licensed addon and ships with its license notice.
 
 The bootstrap installer is small, but CurseForge downloads the full modpack afterward. Make Me Ready requires at least 8 GiB free before beginning, and the finished profile may need more as the pack changes.
 
