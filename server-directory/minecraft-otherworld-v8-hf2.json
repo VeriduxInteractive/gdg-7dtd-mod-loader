@@ -1,0 +1,25 @@
+{
+  "manifestVersion": 1,
+  "game": "minecraft",
+  "server": {
+    "id": "gdg-minecraft-otherworld",
+    "name": "Golden Days | Otherworld Dungeons & Dragons",
+    "host": "goldendays.mcsh.io",
+    "port": 25565,
+    "quickJoinVersion": "0.3.0",
+    "gameVersion": "Otherworld v8 HF2 · Minecraft 1.20.1 · Forge 47.4.20",
+    "steamBuildId": "8074976",
+    "gameVersionMap": {
+      "8074976": "Otherworld v8 HF2 · Minecraft 1.20.1 · Forge 47.4.20"
+    },
+    "prismPack": {
+      "projectId": "1418133",
+      "versionId": "8074976",
+      "versionName": "Otherworld v8 HF2",
+      "minecraftVersion": "1.20.1",
+      "forgeVersion": "47.4.20"
+    }
+  },
+  "generatedAt": "2026-08-05T00:24:41.916Z",
+  "mods": []
+}

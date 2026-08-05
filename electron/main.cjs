@@ -91,7 +91,7 @@ const GAME_PROFILES = {
     steamAppId: "",
     steamStoreSlug: "",
     envInstall: "GDG_MINECRAFT_INSTANCE",
-    defaultServerId: "gdg-minecraft-superior",
+    defaultServerId: "gdg-minecraft-otherworld",
     copyFolderName: "",
     modsPathSegments: ["minecraft", "mods"],
     modArchive: "generic-folder",
@@ -104,22 +104,26 @@ const GAME_PROFILES = {
     rootSignalMode: "all",
     steamCommonNames: [],
     extraCandidateRoots: () => [
-      path.join(os.homedir(), "AppData", "Roaming", "PrismLauncher", "instances", "FTB Presents Stoneblock 2"),
-      path.join(os.homedir(), "curseforge", "minecraft", "Instances", "FTB Presents Stoneblock 2")
+      path.join(os.homedir(), "AppData", "Roaming", "PrismLauncher", "instances", "Otherworld [Dungeons & Dragons]"),
+      path.join(os.homedir(), "curseforge", "minecraft", "Instances", "Otherworld [Dungeons & Dragons]")
     ],
     excludedCopyPaths: [],
     supportLogName: "Minecraft Java",
     launchServer: "goldendays.mcsh.io",
-    prismPackProjectId: "310396",
-    prismPackVersionId: "2818169",
-    prismPackVersionName: "FTB Presents Stoneblock 2 1.16.1",
-    prismPackMinimumInstalledAddons: 225,
-    prismPackMinimumModFiles: 225,
-    prismPackRequiredPaths: ["manifest.json", "config", "mods", "scripts"],
+    prismPackProjectId: "1418133",
+    prismPackVersionId: "8074976",
+    prismPackVersionName: "Otherworld v8 HF2",
+    prismPackMinimumInstalledAddons: 390,
+    prismPackMinimumModFiles: 390,
+    prismPackRequiredPaths: ["manifest.json", "config", "mods", "configureddefaults"],
     priorGdgPacks: [
       {
         name: "SUPERIOR - RPG",
         projectId: "1293866"
+      },
+      {
+        name: "FTB Presents Stoneblock 2",
+        projectId: "310396"
       }
     ],
     bootstrapManifestPath: path.join(__dirname, "..", "server-directory", "minecraft-bootstrap.json"),
@@ -2325,13 +2329,13 @@ async function choosePriorGdgMinecraftMigration(profile, nextPack) {
     .join("\n\n");
   const choice = await dialog.showMessageBox(mainWindow, {
     type: "question",
-    buttons: ["Keep Old & Create Stoneblock", "Move Old to Recycle Bin & Create Stoneblock", "Cancel"],
+    buttons: ["Keep Old & Create Otherworld", "Move Old to Recycle Bin & Create Otherworld", "Cancel"],
     defaultId: 0,
     cancelId: 2,
     noLink: true,
     title: "Choose what to do with the old GDG modpack",
     message: `An older Golden Days Minecraft instance was found. How should GDG set up ${nextPack.name}?`,
-    detail: `Keep preserves the old instance and creates/selects Stoneblock separately. Recycle removes only the prior GDG/Superior instance shown below; unrelated Minecraft modpacks are never touched.\n\n${instanceList}`
+    detail: `Keep preserves the old instance and creates/selects Otherworld separately. Recycle removes only the verified prior GDG Superior or Stoneblock instance shown below; unrelated Minecraft modpacks are never touched.\n\n${instanceList}`
   });
 
   if (choice.response === 2) {

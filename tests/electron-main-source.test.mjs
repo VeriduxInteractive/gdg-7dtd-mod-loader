@@ -26,15 +26,15 @@ describe("Electron main source", () => {
     expect(source).toContain("temp_*");
   });
 
-  it("defines an exact CurseForge-first Stoneblock 2 profile with Prism compatibility", async () => {
+  it("defines an exact CurseForge-first Otherworld profile with Prism compatibility", async () => {
     const source = await readFile(new URL("../electron/main.cjs", import.meta.url), "utf8");
 
     expect(source).toMatch(/minecraft:\s*\{[^]*platform:\s*"prism"/);
     expect(source).toMatch(/minecraft:\s*\{[^]*managesModsExternally:\s*true/);
-    expect(source).toContain('prismPackVersionId: "2818169"');
-    expect(source).toContain("prismPackMinimumInstalledAddons: 225");
-    expect(source).toContain("prismPackMinimumModFiles: 225");
-    expect(source).toContain('prismPackRequiredPaths: ["manifest.json", "config", "mods", "scripts"]');
+    expect(source).toContain('prismPackVersionId: "8074976"');
+    expect(source).toContain("prismPackMinimumInstalledAddons: 390");
+    expect(source).toContain("prismPackMinimumModFiles: 390");
+    expect(source).toContain('prismPackRequiredPaths: ["manifest.json", "config", "mods", "configureddefaults"]');
     expect(source).toContain("curseForgeGameId: 432");
     expect(source).toContain("priority: isCurseForgeMinecraft ? 70 : 80");
     expect(source).toContain('`curseforge://launch-game?instanceId=${encodeURIComponent(instanceId)}&gameId=${gameTypeId}`');

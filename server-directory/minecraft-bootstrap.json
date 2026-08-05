@@ -10,21 +10,23 @@
     "maxSizeBytes": 104857600
   },
   "pack": {
-    "name": "FTB Presents Stoneblock 2 1.16.1",
-    "projectId": "310396",
-    "fileId": "2818169",
-    "installUri": "curseforge://install?addonId=310396&fileId=2818169",
-    "sourcePage": "https://www.curseforge.com/minecraft/modpacks/ftb-presents-stoneblock-2/files/2818169",
-    "minimumInstalledAddons": 225,
-    "minimumModFiles": 225,
+    "name": "Otherworld v8 HF2",
+    "projectId": "1418133",
+    "fileId": "8074976",
+    "serverPackFileId": "8074983",
+    "installUri": "curseforge://install?addonId=1418133&fileId=8074976",
+    "sourcePage": "https://www.curseforge.com/minecraft/modpacks/otherworld-dnd/files/8074976",
+    "serverPackPage": "https://www.curseforge.com/minecraft/modpacks/otherworld-dnd/files/8074983",
+    "minimumInstalledAddons": 390,
+    "minimumModFiles": 390,
     "requiredPaths": [
       "manifest.json",
       "config",
       "mods",
-      "scripts"
+      "configureddefaults"
     ],
     "requiredFileNames": []
   },
-  "minimumFreeBytes": 5368709120,
-  "confirmationTimeoutMinutes": 30
+  "minimumFreeBytes": 8589934592,
+  "confirmationTimeoutMinutes": 45
 }

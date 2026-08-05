@@ -8,13 +8,13 @@ The loader supports 7 Days to Die, R.E.P.O., and a CurseForge-managed Minecraft 
 
 - Detect the local 7 Days to Die install.
 - Detect the local R.E.P.O. install.
-- Detect an existing complete FTB Presents Stoneblock 2 CurseForge or Prism instance, reuse an installed CurseForge app or registered link handler, and install the signed CurseForge standalone app only when neither is present.
+- Detect an existing complete Otherworld v8 HF2 CurseForge or Prism instance, reuse an installed CurseForge app or registered link handler, and install the signed CurseForge standalone app only when neither is present.
 - Let the player choose whether to use that install, create a `7 Days To Die - GDG` copy, or skip setup.
 - Let the player switch the app's game profile and create a separate `R.E.P.O. - GDG` copy.
 - Read a Golden Days manifest from a server or hosted mod-pack feed.
 - Compare the manifest against the player's local mod folder.
 - For R.E.P.O., compare and install packages under `BepInEx/plugins`.
-- For Minecraft, ask CurseForge for the exact Stoneblock 2 release, wait through account onboarding and pack installation, validate the finished instance, then launch it directly into the GDG server.
+- For Minecraft, ask CurseForge for the exact Otherworld v8 HF2 release, wait through account onboarding and pack installation, validate the finished instance, then launch it directly into the GDG server.
 - Install and update the GDG-owned Quick Join addon, which adds live Golden Days server status and one-click joining to Minecraft's title screen.
 - Install or update missing client-side mod packages.
 - Block server-only manifest entries from client install and track GDG-managed mods locally.
@@ -31,15 +31,15 @@ The desktop app currently exposes three game profiles:
 
 - `7dtd`: Steam app `251570`, mod root `Mods`, package zips must contain a 7 Days to Die mod folder with `ModInfo.xml`.
 - `repo`: Steam app `3241660`, mod root `BepInEx/plugins`, package zips can contain a self-contained folder or direct plugin files that the loader installs into a managed folder.
-- `minecraft`: FTB Presents Stoneblock 2 `1.16.1`, Minecraft `1.12.2`, Forge `14.23.5.2846`, CurseForge project `310396` / file `2818169`. Existing compatible CurseForge and Prism instances are supported. Make Me Ready checks multiple known CurseForge install paths and the registered `curseforge:` link handler before downloading anything. When installation is necessary, it downloads the official standalone installer over HTTPS, verifies its valid `Overwolf Ltd` Authenticode signature, opens the exact project/file through CurseForge, and does not report readiness until CurseForge marks the instance valid with the expected pack metadata and file counts.
+- `minecraft`: Otherworld v8 HF2, Minecraft `1.20.1`, Forge `47.4.20`, CurseForge project `1418133` / client file `8074976` / paired server-pack file `8074983`. Existing compatible CurseForge and Prism instances are supported. Make Me Ready checks multiple known CurseForge install paths and the registered `curseforge:` link handler before downloading anything. When installation is necessary, it downloads the official standalone installer over HTTPS, verifies its valid `Overwolf Ltd` Authenticode signature, opens the exact project/file through CurseForge, and does not report readiness until CurseForge marks the instance valid with the expected pack metadata and file counts.
 
-The Minecraft profile never alters third-party Stoneblock 2 pack mods. It manages only the GDG-owned `GDG-Quick-Join.jar` Forge 1.12.2 add-on, which supports Stoneblock 2's Custom Main Menu and vanilla title screen. The add-on pings configured Golden Days servers, displays their live status, and connects when a player selects one. Its server list is stored in `config/gdg-quick-join.json`.
+The Minecraft profile never alters third-party Otherworld pack mods. It manages only the GDG-owned `GDG-Quick-Join.jar` Forge 1.20.1 add-on, which attaches to Otherworld's FancyMenu-backed title screen. The add-on pings configured Golden Days servers, displays their live status, and connects when a player selects one. Its server list is stored in `config/gdg-quick-join.json`.
 
-When Make Me Ready finds the prior GDG Superior profile, it asks the player to either keep that instance and create Stoneblock 2 separately, or move the old GDG instance to the Windows Recycle Bin before continuing. Removal is separately confirmed, revalidates the known Superior CurseForge project identity immediately before acting, and never targets unrelated Minecraft modpacks.
+When Make Me Ready finds a prior GDG Superior or Stoneblock 2 profile, it asks the player to either keep that instance and create Otherworld separately, or move the old GDG instance to the Windows Recycle Bin before continuing. Removal is separately confirmed, revalidates the known CurseForge project identity immediately before acting, and never targets unrelated Minecraft modpacks.
 
 Players complete Microsoft sign-in in CurseForge before first play. Because the pack is installed by CurseForge itself, files whose authors disable third-party distribution are obtained through the authorized first-party flow instead of sending players through Prism's manual-download pages. GDG Mod Loader does not bundle or redistribute those files.
 
-The bootstrap installer is small, but CurseForge downloads the full modpack afterward. Make Me Ready requires at least 5 GiB free before beginning, and the finished profile may need more as the pack changes.
+The bootstrap installer is small, but CurseForge downloads the full modpack afterward. Make Me Ready requires at least 8 GiB free before beginning, and the finished profile may need more as the pack changes.
 
 Manifests identify the target game with `game: "7dtd"`, `game: "repo"`, or `game: "minecraft"`. The built-in server directory includes separate rows for each game.
 

@@ -3,15 +3,15 @@
   "brand": "Golden Days Gaming",
   "servers": [
     {
-      "id": "gdg-minecraft-superior",
+      "id": "gdg-minecraft-otherworld",
       "game": "minecraft",
-      "name": "Golden Days | FTB Presents Stoneblock 2",
-      "description": "Public Minecraft Java server using the CurseForge-managed FTB Presents Stoneblock 2 1.16.1 pack",
+      "name": "Golden Days | Otherworld Dungeons & Dragons",
+      "description": "Public Minecraft Java server using the CurseForge-managed Otherworld v8 HF2 pack",
       "host": "goldendays.mcsh.io",
       "gamePort": 25565,
-      "syncUrl": "bundled://minecraft-stoneblock2-1.16.1.json",
+      "syncUrl": "bundled://minecraft-otherworld-v8-hf2.json",
       "modManager": "curseforge",
-      "packUrl": "https://www.curseforge.com/minecraft/modpacks/ftb-presents-stoneblock-2/files/2818169",
+      "packUrl": "https://www.curseforge.com/minecraft/modpacks/otherworld-dnd/files/8074976",
       "recommended": true
     },
     {

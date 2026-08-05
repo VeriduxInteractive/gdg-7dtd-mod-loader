@@ -104,8 +104,8 @@ const gameDefinitions: Record<GameId, {
     id: "minecraft",
     name: "Minecraft Java",
     shortName: "Minecraft",
-    folderPlaceholder: "%USERPROFILE%\\curseforge\\minecraft\\Instances\\FTB Presents Stoneblock 2",
-    defaultServerId: "gdg-minecraft-superior",
+    folderPlaceholder: "%USERPROFILE%\\curseforge\\minecraft\\Instances\\Otherworld [Dungeons & Dragons]",
+    defaultServerId: "gdg-minecraft-otherworld",
     supportsEac: false,
     supportsCopy: false,
     copyName: "",
@@ -799,7 +799,7 @@ function App() {
       const cleanupMessage = result.recycledInstances?.length
         ? `; moved ${result.recycledInstances.length} old GDG instance${result.recycledInstances.length === 1 ? "" : "s"} to the Recycle Bin`
         : "";
-      return `${result.created ? "Stoneblock 2 installed and verified" : "Existing Stoneblock 2 instance selected"}${cleanupMessage}`;
+      return `${result.created ? "Otherworld v8 HF2 installed and verified" : "Existing Otherworld v8 HF2 instance selected"}${cleanupMessage}`;
     });
   }
 
@@ -1497,7 +1497,7 @@ function App() {
         throw new Error(result.error || `${selectedGame.versionManager} could not be opened.`);
       }
       if (result.target === "launcher") {
-        return `Minecraft launcher opened. Update or repair the Stoneblock 2 instance, then check the server pack again.`;
+        return `Minecraft launcher opened. Update or repair the Otherworld v8 HF2 instance, then check the server pack again.`;
       }
       return result.target === "web"
         ? `Steam page opened. Update ${selectedGame.name}, then check server mods again.`
@@ -1732,7 +1732,7 @@ function App() {
           tone: "gold",
           title: config.gameId === "minecraft" ? "Next up: create your Minecraft instance" : `Next up: find ${selectedGame.name}`,
           detail: config.gameId === "minecraft"
-            ? "GDG can reuse or install CurseForge and prepare the exact Stoneblock 2 pack for you."
+            ? "GDG can reuse or install CurseForge and prepare the exact Otherworld v8 HF2 pack for you."
             : "GDG needs the local game folder before it can compare mods.",
           label: config.gameId === "minecraft" ? "Set Up Minecraft" : "Detect Game",
           icon: config.gameId === "minecraft" ? <Download size={18} /> : <Search size={18} />,
@@ -2313,7 +2313,7 @@ function App() {
                     <p className="step-copy">
                       {selectedGame.supportsCopy
                         ? <>GDG can keep vanilla untouched by making a separate copy, or it can install mods into your existing {selectedGame.name} folder.</>
-                        : <>GDG can reuse an existing CurseForge installation or install the official standalone app, then prepare and verify the exact Stoneblock 2 profile.</>}
+                        : <>GDG can reuse an existing CurseForge installation or install the official standalone app, then prepare and verify the exact Otherworld v8 HF2 profile.</>}
                     </p>
 
                     {config.gamePath && (
@@ -3117,7 +3117,7 @@ function SetupChoicePanel({
                 ? `A GDG copy is safest for most players. It creates a separate folder beside the detected game and starts with clean ${game.modsLabel}.`
                 : `GDG found a compatible Minecraft instance. Use it directly so its launcher remains responsible for pack files and updates.`
               : game.id === "minecraft"
-                ? "GDG first checks for an existing CurseForge installation, installs the signed standalone app only when needed, requests the exact Stoneblock 2 profile, and waits until CurseForge has fully installed and validated it."
+                ? "GDG first checks for an existing CurseForge installation, installs the signed standalone app only when needed, requests the exact Otherworld v8 HF2 profile, and waits until CurseForge has fully installed and validated it."
                 : "GDG could not find the game automatically. Pick the folder you want Make Me Ready to prepare."}
           </p>
           {hasDetectedGame && <small>{detectedSetupLabel}: {detected?.path}</small>}
@@ -3131,10 +3131,10 @@ function SetupChoicePanel({
             <button className="setup-option overwrite" type="button" onClick={() => void onUseExisting()} disabled={disabled}>
               <AlertTriangle size={20} />
               <span>
-                <strong>{game.id === "minecraft" ? "Use detected Stoneblock 2 instance" : detected?.isGdgCopy ? "Use detected GDG copy" : "Use existing game"}</strong>
+                <strong>{game.id === "minecraft" ? "Use detected Otherworld v8 HF2 instance" : detected?.isGdgCopy ? "Use detected GDG copy" : "Use existing game"}</strong>
                 <small>
                   {game.id === "minecraft"
-                    ? "Use the detected Stoneblock 2 instance and let CurseForge or Prism continue managing its pack files."
+                    ? "Use the detected Otherworld v8 HF2 instance and let CurseForge or Prism continue managing its pack files."
                     : detected?.isGdgCopy
                     ? "Select the detected modded copy. This will not point at your vanilla Steam folder."
                     : `Use your current ${game.name} folder. GDG mods will be installed into this game.`}
@@ -3157,7 +3157,7 @@ function SetupChoicePanel({
             <Download size={20} />
             <span>
               <strong>Create CurseForge profile <em>Recommended</em></strong>
-              <small>Reuse CurseForge if it is already installed, or install the signed standalone app if needed. GDG opens the exact Stoneblock 2 release and waits for account setup and all pack files before reporting readiness.</small>
+              <small>Reuse CurseForge if it is already installed, or install the signed standalone app if needed. GDG opens the exact Otherworld v8 HF2 release and waits for account setup and all pack files before reporting readiness.</small>
             </span>
           </button>
         )}
